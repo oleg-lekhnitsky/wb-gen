@@ -2225,7 +2225,11 @@ async function checkRemoteRenderer() {
   }
 }
 
-async function readRenderResponse(response: Response, outputType: string) {
+async function readRenderResponse(
+  response: Response,
+  outputType: string,
+  onProgress?: (message: { progress: number, status: string }) => void
+) {
   const responseType = response.headers.get('content-type') || ''
   if (!responseType.includes('application/x-resizer-render-stream')) {
     return response.blob()
@@ -2238,6 +2242,7 @@ async function readRenderResponse(response: Response, outputType: string) {
   const header = new Uint8Array(5)
   const resultChunks: Uint8Array[] = []
   const errorChunks: Uint8Array[] = []
+  let progressChunks: Uint8Array[] = []
   let headerLength = 0
   let frameType: number | null = null
   let frameBytesRemaining = 0
@@ -2270,11 +2275,27 @@ async function readRenderResponse(response: Response, outputType: string) {
       const payload = value.slice(offset, offset + payloadBytes)
       if (frameType === 1) resultChunks.push(payload)
       if (frameType === 2) errorChunks.push(payload)
+      if (frameType === 3) progressChunks.push(payload)
       offset += payloadBytes
       frameBytesRemaining -= payloadBytes
 
       if (frameBytesRemaining === 0) {
         if (frameType === 1) resultComplete = true
+        if (frameType === 3) {
+          try {
+            const message = JSON.parse(await new Blob(progressChunks).text()) as {
+              progress?: unknown
+              status?: unknown
+            }
+            if (typeof message.progress === 'number' && typeof message.status === 'string') {
+              onProgress?.({
+                progress: Math.max(0, Math.min(1, message.progress)),
+                status: message.status
+              })
+            }
+          } catch {}
+          progressChunks = []
+        }
         frameType = null
       }
     }
@@ -2685,21 +2706,33 @@ async function renderSequence() {
     }, 250)
 
     const response = await fetchRenderEndpoint('/api/render-browser', formData)
-    clearInterval(exportProgressTimer)
-    exportProgress.value = 0.95
-    exportStatus.value = exportFormat.value === 'mp4'
-      ? 'Finalizing MP4'
-      : 'Packaging PNG files'
+    const streamedResponse = (response.headers.get('content-type') || '')
+      .includes('application/x-resizer-render-stream')
+    if (streamedResponse) clearInterval(exportProgressTimer)
 
     if (!response.ok) {
+      clearInterval(exportProgressTimer)
       const message = await response.text()
       throw new Error(message || 'Browser render failed.')
     }
 
+    if (!streamedResponse) {
+      clearInterval(exportProgressTimer)
+      exportProgress.value = 0.95
+      exportStatus.value = exportFormat.value === 'mp4'
+        ? 'Finalizing MP4'
+        : 'Packaging PNG files'
+    }
+
     const output = await readRenderResponse(
       response,
-      exportFormat.value === 'mp4' ? 'video/mp4' : 'application/zip'
+      exportFormat.value === 'mp4' ? 'video/mp4' : 'application/zip',
+      message => {
+        exportProgress.value = message.progress
+        exportStatus.value = message.status
+      }
     )
+    clearInterval(exportProgressTimer)
     const url = URL.createObjectURL(output)
     const link = document.createElement('a')
     link.href = url

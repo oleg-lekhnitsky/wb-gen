@@ -50,6 +50,7 @@ const renderStreamContentType = 'application/x-resizer-render-stream'
 const renderStreamHeartbeat = 0
 const renderStreamResult = 1
 const renderStreamError = 2
+const renderStreamProgress = 3
 
 function createRenderStreamFrame(type: number, data: Uint8Array = new Uint8Array()) {
   const header = Buffer.allocUnsafe(5)
@@ -60,11 +61,23 @@ function createRenderStreamFrame(type: number, data: Uint8Array = new Uint8Array
     : header
 }
 
-function runFfmpeg(args: string[]) {
+function runFfmpeg(args: string[], onFrame?: (frame: number) => void) {
   return new Promise<void>((resolve, reject) => {
     const process = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] })
     let output = ''
-    process.stderr.on('data', chunk => { output += String(chunk) })
+    let progressOutput = ''
+    process.stderr.on('data', chunk => {
+      const text = String(chunk)
+      output += text
+      if (!onFrame) return
+      progressOutput += text
+      const lines = progressOutput.split(/\r?\n/)
+      progressOutput = lines.pop() || ''
+      for (const line of lines) {
+        const match = /^frame=(\d+)$/.exec(line.trim())
+        if (match?.[1]) onFrame(Number(match[1]))
+      }
+    })
     process.once('error', reject)
     process.once('close', code => {
       if (code === 0) resolve()
@@ -200,6 +213,14 @@ export default defineEventHandler(async event => {
   setHeader(event, 'Content-Encoding', 'identity')
   setHeader(event, 'X-Accel-Buffering', 'no')
   responseStream.write(createRenderStreamFrame(renderStreamHeartbeat))
+  const sendProgress = (progress: number, status: string) => {
+    if (responseStream.destroyed) return
+    responseStream.write(createRenderStreamFrame(
+      renderStreamProgress,
+      new TextEncoder().encode(JSON.stringify({ progress, status }))
+    ))
+  }
+  sendProgress(0.02, 'Starting renderer')
   const heartbeat = setInterval(() => {
     if (!responseStream.destroyed) {
       responseStream.write(createRenderStreamFrame(renderStreamHeartbeat))
@@ -330,6 +351,7 @@ export default defineEventHandler(async event => {
       }
     )
 
+    const renderProgressStep = Math.max(1, Math.ceil(frameCount / 100))
     for (let frame = 0; frame < frameCount; frame += 1) {
       const time = Math.min(frame / fps, duration)
       let currentIndex = 0
@@ -606,6 +628,13 @@ export default defineEventHandler(async event => {
         path: join(sourceDirectory, `frame-${String(frame + 1).padStart(digits, '0')}.png`),
         animations: 'disabled'
       })
+      const completedFrames = frame + 1
+      if (completedFrames % renderProgressStep === 0 || completedFrames === frameCount) {
+        sendProgress(
+          0.05 + completedFrames / frameCount * 0.8,
+          `Rendering frame ${completedFrames} of ${frameCount}`
+        )
+      }
     }
 
     const resizeFilter = `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height}`
@@ -619,8 +648,9 @@ export default defineEventHandler(async event => {
         'out_color_matrix=bt709'
       ].join(':')
       const output = join(directory, 'animation.mp4')
+      sendProgress(0.86, 'Encoding MP4')
       await runFfmpeg([
-        '-hide_banner', '-loglevel', 'error',
+        '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:2', '-nostats',
         '-framerate', String(fps),
         '-i', join(sourceDirectory, `frame-%0${digits}d.png`),
         '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
@@ -633,28 +663,44 @@ export default defineEventHandler(async event => {
         '-color_range', 'tv',
         '-movflags', '+faststart',
         '-y', output
-      ])
+      ], encodedFrame => {
+        const completedFrames = Math.max(0, Math.min(frameCount, encodedFrame))
+        sendProgress(
+          0.86 + completedFrames / frameCount * 0.12,
+          `Encoding MP4: frame ${completedFrames} of ${frameCount}`
+        )
+      })
+      sendProgress(0.99, 'Finalizing MP4')
       const video = await readFile(output)
       responseStream.write(createRenderStreamFrame(renderStreamResult, video))
       return
     }
 
+    sendProgress(0.86, 'Resizing PNG frames')
     await runFfmpeg([
-      '-hide_banner', '-loglevel', 'error',
+      '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:2', '-nostats',
       '-framerate', String(fps),
       '-i', join(sourceDirectory, `frame-%0${digits}d.png`),
       '-vf', resizeFilter,
       '-start_number', '1',
       '-y',
       join(outputDirectory, `frame-%0${digits}d.png`)
-    ])
+    ], resizedFrame => {
+      const completedFrames = Math.max(0, Math.min(frameCount, resizedFrame))
+      sendProgress(
+        0.86 + completedFrames / frameCount * 0.1,
+        `Resizing PNG frame ${completedFrames} of ${frameCount}`
+      )
+    })
 
+    sendProgress(0.97, 'Packaging PNG files')
     const names = (await readdir(outputDirectory)).filter(name => name.endsWith('.png')).sort()
     const files = await Promise.all(names.map(async name => ({
       name,
       data: new Uint8Array(await readFile(join(outputDirectory, name)))
     })))
     const zip = createZip(files)
+    sendProgress(0.99, 'Finalizing PNG sequence')
     responseStream.write(createRenderStreamFrame(renderStreamResult, zip))
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Browser render failed.'
