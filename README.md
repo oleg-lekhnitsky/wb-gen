@@ -76,7 +76,7 @@ Check out the [deployment documentation](https://nuxt.com/docs/getting-started/d
 
 ## Local renderer on macOS
 
-The deployed website can send exact Playwright screenshots and FFmpeg video renders to this computer. Double-click `Start Resizer Renderer.command` in Finder and keep its Terminal window open while rendering.
+The deployed website can send exact Playwright screenshots and FFmpeg video renders to this computer. Double-click `Start Resizer Renderer.command` in Finder and keep its Terminal window open while rendering. The launcher also works when shared by itself: it downloads the public `oleg-lekhnitsky/wb-gen` `main` branch into `~/Library/Application Support/Resizer Renderer/source` and refreshes that cached copy on later launches.
 
 On its first run, the launcher:
 
