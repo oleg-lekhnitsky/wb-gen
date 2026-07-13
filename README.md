@@ -73,3 +73,17 @@ bun run preview
 ```
 
 Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
+
+## Local renderer on macOS
+
+The deployed website can send exact Playwright screenshots and FFmpeg video renders to this computer. Double-click `Start Resizer Renderer.command` in Finder and keep its Terminal window open while rendering.
+
+On its first run, the launcher:
+
+- activates the Node version in `.nvmrc` when nvm is available;
+- otherwise installs Node 22 through an existing Homebrew installation;
+- installs project packages and Playwright Chromium when missing;
+- installs FFmpeg through Homebrew when missing;
+- starts the renderer at `http://127.0.0.1:3000` and opens the website.
+
+If Homebrew is not installed and Node 22 or FFmpeg is missing, the launcher stops with instructions instead of modifying the system without a package manager.

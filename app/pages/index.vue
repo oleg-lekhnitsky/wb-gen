@@ -60,7 +60,6 @@ type AspectSlideFields = Pick<
 type AspectSlideSettings = Record<PanelSide, AspectSlideFields[]>
 type PackshotRenderer = 'canvas' | 'svg'
 type PackshotPlayback = 'once' | 'loop'
-type Mp4Chroma = 'compatible' | 'high'
 type AspectPreset = {
   label: string
   width: number
@@ -101,7 +100,6 @@ type PersistedSettings = {
   exportFps: number
   exportPrefix: string
   exportFormat: 'png' | 'mp4'
-  mp4Chroma?: Mp4Chroma
   aspectWidth: number
   aspectHeight: number
   reverseDirections: boolean
@@ -208,6 +206,8 @@ const aspectPresets: AspectPreset[] = [
 ]
 const aspectWorkspaceVersion = 1
 const storageKey = 'slot-animation-generator-settings-v1'
+const localRendererPreferenceKey = 'resizer-use-local-renderer-v1'
+const localRendererOrigin = 'http://127.0.0.1:3000'
 const settingsDatabaseName = 'slot-animation-generator'
 const settingsStoreName = 'settings'
 const settingsRecordKey = 'current'
@@ -406,7 +406,6 @@ const exportHeight = ref(1080)
 const exportFps = ref(30)
 const exportPrefix = ref('slot-animation')
 const exportFormat = ref<'png' | 'mp4'>('mp4')
-const mp4Chroma = ref<Mp4Chroma>('compatible')
 const aspectWidth = ref(16)
 const aspectHeight = ref(9)
 const reverseDirections = ref(false)
@@ -431,6 +430,8 @@ const isRenderingAspectGroup = ref(false)
 const exportProgress = ref(0)
 const exportStatus = ref('Preparing render')
 const exportError = ref('')
+const useLocalRenderer = ref(false)
+const localRendererStatus = ref<'idle' | 'checking' | 'connected' | 'unavailable'>('idle')
 const controlsPanel = ref<HTMLElement | null>(null)
 const curveGraph = ref<SVGSVGElement | null>(null)
 const packshotContainer = ref<HTMLElement | null>(null)
@@ -2162,6 +2163,53 @@ function downloadBlob(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
+async function checkLocalRenderer() {
+  if (!useLocalRenderer.value) {
+    localRendererStatus.value = 'idle'
+    return false
+  }
+
+  localRendererStatus.value = 'checking'
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 1500)
+
+  try {
+    const response = await fetch(`${localRendererOrigin}/api/local-renderer-health`, {
+      cache: 'no-store',
+      signal: controller.signal
+    })
+    const result = response.ok
+    localRendererStatus.value = result ? 'connected' : 'unavailable'
+    return result
+  } catch {
+    localRendererStatus.value = 'unavailable'
+    return false
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
+async function updateLocalRendererPreference() {
+  localStorage.setItem(localRendererPreferenceKey, String(useLocalRenderer.value))
+  await checkLocalRenderer()
+}
+
+async function fetchRenderEndpoint(path: string, formData: FormData) {
+  if (!useLocalRenderer.value || localRendererStatus.value !== 'connected') {
+    return fetch(path, { method: 'POST', body: formData })
+  }
+
+  try {
+    return await fetch(`${localRendererOrigin}${path}`, {
+      method: 'POST',
+      body: formData
+    })
+  } catch {
+    localRendererStatus.value = 'unavailable'
+    return fetch(path, { method: 'POST', body: formData })
+  }
+}
+
 async function downloadMp4(
   files: Array<{ name: string, data: Uint8Array }>,
   prefix: string,
@@ -2326,117 +2374,6 @@ async function renderPngSequenceInBrowser(
   await downloadPngZip(files, prefix)
 }
 
-async function renderCurrentSlidePng(
-  width: number,
-  height: number,
-  images: Map<string, HTMLImageElement>
-) {
-  const snapshots = createSlideSnapshots(width, height, images)
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const context = canvas.getContext('2d')
-  if (!context) throw new Error('Canvas rendering is not supported.')
-
-  const state = {
-    currentIndex: activeIndex.value,
-    nextIndex: activeIndex.value,
-    transition: false,
-    progress: 0
-  }
-  panelSides.forEach((side, sideIndex) => {
-    drawPanelFrame(context, snapshots, side, sideIndex, state, width, height)
-  })
-
-  const blob = await canvasToPng(canvas)
-  return new Uint8Array(await blob.arrayBuffer())
-}
-
-function imageToDataUrl(source: string) {
-  return new Promise<string>((resolve, reject) => {
-    const image = new Image()
-    image.crossOrigin = 'anonymous'
-    image.addEventListener('load', () => {
-      const canvas = document.createElement('canvas')
-      canvas.width = image.naturalWidth || 1
-      canvas.height = image.naturalHeight || 1
-      const context = canvas.getContext('2d')
-      if (!context) {
-        reject(new Error('Canvas rendering is not supported.'))
-        return
-      }
-
-      context.drawImage(image, 0, 0)
-      resolve(canvas.toDataURL('image/png'))
-    })
-    image.addEventListener('error', reject)
-    image.src = source
-  })
-}
-
-async function inlineCloneImages(clone: HTMLElement) {
-  const images = [...clone.querySelectorAll<HTMLImageElement>('img')]
-  await Promise.all(images.map(async image => {
-    if (!image.src || image.src.startsWith('data:')) return
-
-    try {
-      image.src = await imageToDataUrl(image.src)
-    } catch {
-      // Keep same-origin asset URLs if canvas inlining is unavailable.
-    }
-  }))
-}
-
-async function captureStageScreenshotPng(width: number, height: number) {
-  const stage = document.querySelector<HTMLElement>('.slot-stage--main')
-  if (!stage) throw new Error('Unable to find the preview stage.')
-
-  const stageRect = stage.getBoundingClientRect()
-  const clone = stage.cloneNode(true) as HTMLElement
-  copyComputedStyles(stage, clone)
-  await inlineCloneImages(clone)
-
-  clone.style.position = 'relative'
-  clone.style.inset = 'auto'
-  clone.style.width = `${stageRect.width}px`
-  clone.style.height = `${stageRect.height}px`
-  clone.style.margin = '0'
-  clone.style.transform = 'none'
-  clone.style.transformOrigin = 'top left'
-  clone.style.overflow = 'hidden'
-
-  const wrapper = document.createElement('div')
-  wrapper.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml')
-  wrapper.style.width = `${stageRect.width}px`
-  wrapper.style.height = `${stageRect.height}px`
-  wrapper.style.overflow = 'hidden'
-  wrapper.style.background = '#fff'
-  wrapper.append(clone)
-
-  const serialized = new XMLSerializer().serializeToString(wrapper)
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${stageRect.width}" height="${stageRect.height}" viewBox="0 0 ${stageRect.width} ${stageRect.height}">
-      <foreignObject width="100%" height="100%">${serialized}</foreignObject>
-    </svg>
-  `
-  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }))
-
-  try {
-    const image = await loadRenderImage(url)
-    const canvas = document.createElement('canvas')
-    canvas.width = width
-    canvas.height = height
-    const context = canvas.getContext('2d')
-    if (!context) throw new Error('Canvas rendering is not supported.')
-
-    context.drawImage(image, 0, 0, width, height)
-    const blob = await canvasToPng(canvas)
-    return new Uint8Array(await blob.arrayBuffer())
-  } finally {
-    URL.revokeObjectURL(url)
-  }
-}
-
 function sanitizeRenderName(value: string) {
   return value.trim().replace(/[^\p{L}\p{N}_-]+/gu, '-') || 'aspects'
 }
@@ -2446,34 +2383,6 @@ function getRenderDateStamp(date = new Date()) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const year = date.getFullYear()
   return `${day}${month}${year}`
-}
-
-function shouldRenderAspectGroupOnServer(error: unknown) {
-  if (!(error instanceof Error)) return true
-  return /taint|toblob|foreignobject|canvas/i.test(error.message)
-}
-
-async function renderAspectGroupImagesInBrowser(presets: AspectPreset[], groupLabel: string) {
-  await document.fonts.ready
-  const groupName = sanitizeRenderName(groupLabel)
-  const files: Array<{ name: string, data: Uint8Array }> = []
-
-  for (const [index, preset] of presets.entries()) {
-    exportStatus.value = `Rendering ${preset.label}`
-    setAspectRatio(preset)
-    await nextTick()
-    await new Promise(resolve => requestAnimationFrame(resolve))
-
-    files.push({
-      name: `${groupName}_${preset.exportWidth}x${preset.exportHeight}.png`,
-      data: await captureStageScreenshotPng(preset.exportWidth, preset.exportHeight)
-    })
-    exportProgress.value = (index + 1) / presets.length * 0.9
-  }
-
-  exportStatus.value = 'Packaging PNG files'
-  exportProgress.value = 0.95
-  await downloadPngZip(files, groupName, `${groupName}_${getRenderDateStamp()}.zip`)
 }
 
 async function renderAspectGroupImagesOnServer(
@@ -2514,10 +2423,7 @@ async function renderAspectGroupImagesOnServer(
     exportProgress.value = Math.max(exportProgress.value, estimated)
   }, 250)
 
-  const response = await fetch('/api/render-aspect-group', {
-    method: 'POST',
-    body: formData
-  })
+  const response = await fetchRenderEndpoint('/api/render-aspect-group', formData)
   clearInterval(exportProgressTimer)
   exportProgress.value = 0.95
 
@@ -2626,7 +2532,6 @@ async function renderSequence() {
       exportFps: fps,
       exportPrefix: prefix,
       exportFormat: exportFormat.value,
-      mp4Chroma: mp4Chroma.value,
       aspectWidth: aspectWidth.value,
       aspectHeight: aspectHeight.value,
       reverseDirections: reverseDirections.value,
@@ -2666,14 +2571,11 @@ async function renderSequence() {
       exportProgress.value = Math.max(exportProgress.value, estimated)
     }, 250)
 
-    const response = await fetch('/api/render-browser', {
-      method: 'POST',
-      body: formData
-    })
+    const response = await fetchRenderEndpoint('/api/render-browser', formData)
     clearInterval(exportProgressTimer)
     exportProgress.value = 0.95
     exportStatus.value = exportFormat.value === 'mp4'
-      ? mp4Chroma.value === 'high' ? 'Finalizing MOV' : 'Finalizing MP4'
+      ? 'Finalizing MP4'
       : 'Packaging PNG files'
 
     if (!response.ok) {
@@ -2686,7 +2588,7 @@ async function renderSequence() {
     const link = document.createElement('a')
     link.href = url
     link.download = exportFormat.value === 'mp4'
-      ? `${prefix}.${mp4Chroma.value === 'high' ? 'mov' : 'mp4'}`
+      ? `${prefix}.mp4`
       : `${prefix}-png-sequence.zip`
     link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
@@ -2955,9 +2857,6 @@ function applySettings(settings: Partial<PersistedSettings>) {
   if (settings.exportFormat === 'png' || settings.exportFormat === 'mp4') {
     exportFormat.value = settings.exportFormat
   }
-  if (settings.mp4Chroma === 'compatible' || settings.mp4Chroma === 'high') {
-    mp4Chroma.value = settings.mp4Chroma
-  }
   if (
     typeof settings.aspectWidth === 'number'
     && typeof settings.aspectHeight === 'number'
@@ -3171,7 +3070,6 @@ function getCurrentSettings(): PersistedSettings {
     exportFps: exportFps.value,
     exportPrefix: exportPrefix.value,
     exportFormat: exportFormat.value,
-    mp4Chroma: mp4Chroma.value,
     aspectWidth: aspectWidth.value,
     aspectHeight: aspectHeight.value,
     reverseDirections: reverseDirections.value,
@@ -3329,6 +3227,8 @@ function scheduleSave() {
 
 onMounted(async () => {
   await loadSettings()
+  useLocalRenderer.value = localStorage.getItem(localRendererPreferenceKey) === 'true'
+  if (useLocalRenderer.value) void checkLocalRenderer()
   recordUndoSnapshot()
   initPackshotAnimation()
   restartAutoplay()
@@ -3351,7 +3251,6 @@ onMounted(async () => {
       exportFps,
       exportPrefix,
       exportFormat,
-      mp4Chroma,
       aspectWidth,
       aspectHeight,
       reverseDirections,
@@ -4021,11 +3920,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         <div class="export-heading">
           <div>
             <h2>
-              {{
-                exportFormat === 'mp4'
-                  ? mp4Chroma === 'high' ? 'MOV video' : 'MP4 video'
-                  : 'PNG sequence'
-              }}
+              {{ exportFormat === 'mp4' ? 'MP4 video' : 'PNG sequence' }}
             </h2>
           </div>
           <strong>{{ exportFrameCount }} frames</strong>
@@ -4037,13 +3932,6 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             <select v-model="exportFormat">
               <option value="mp4">MP4 · H.264</option>
               <option value="png">PNG sequence · ZIP</option>
-            </select>
-          </label>
-          <label v-if="exportFormat === 'mp4'">
-            MP4 color
-            <select v-model="mp4Chroma">
-              <option value="compatible">Compatible · 4:2:0</option>
-              <option value="high">High color · ProRes MOV</option>
             </select>
           </label>
           <label>
@@ -4090,6 +3978,22 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           <span>{{ totalDuration.toFixed(2) }}s at {{ exportFps }} fps</span>
         </div>
 
+        <label class="direction-toggle local-renderer-toggle">
+          <span>
+            <strong>Local renderer</strong>
+            <small v-if="!useLocalRenderer">Uses the current website server</small>
+            <small v-else-if="localRendererStatus === 'connected'">Connected at 127.0.0.1:3000</small>
+            <small v-else-if="localRendererStatus === 'checking'">Checking connection…</small>
+            <small v-else>Not found; current server remains available</small>
+          </span>
+          <input
+            v-model="useLocalRenderer"
+            type="checkbox"
+            :disabled="isExporting"
+            @change="updateLocalRendererPreference"
+          >
+        </label>
+
         <PresetControls
           class="export-preset-control"
           :filename-prefix="exportPrefix"
@@ -4114,7 +4018,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
               isExporting
                 ? exportStatus
                 : exportFormat === 'mp4'
-                  ? mp4Chroma === 'high' ? 'Render MOV' : 'Render MP4'
+                  ? 'Render MP4'
                   : 'Render PNG sequence'
             }}
           </span>
@@ -4123,9 +4027,9 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         <p class="export-note">
           {{
             exportFormat === 'mp4'
-              ? mp4Chroma === 'high'
-                ? 'Frames are converted to ProRes MOV for high-color QuickTime playback. FFmpeg is required on the deployment host.'
-                : 'Frames are converted to H.264 MP4 by the local server. FFmpeg is required on the deployment host.'
+              ? useLocalRenderer && localRendererStatus === 'connected'
+                ? 'Frames are rendered and converted to H.264 MP4 on this computer.'
+                : 'Frames are converted to H.264 MP4 by the current website server. FFmpeg is required on its host.'
               : 'Downloads a ZIP containing numbered PNG frames.'
           }}
           Large resolutions and frame rates use significant memory.

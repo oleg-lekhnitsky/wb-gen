@@ -23,7 +23,6 @@ type RenderSettings = {
   exportFps: number
   exportPrefix: string
   exportFormat: 'png' | 'mp4'
-  mp4Chroma?: 'compatible' | 'high'
   aspectWidth: number
   aspectHeight: number
   reverseDirections: boolean
@@ -594,32 +593,23 @@ export default defineEventHandler(async event => {
     ])
 
     if (settings.exportFormat === 'mp4') {
-      const highColor = settings.mp4Chroma === 'high'
       const scaleFilter = 'scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos+accurate_rnd+full_chroma_int'
-      const output = join(directory, highColor ? 'animation.mov' : 'animation.mp4')
+      const output = join(directory, 'animation.mp4')
       await runFfmpeg([
         '-hide_banner', '-loglevel', 'error',
         '-framerate', String(fps),
         '-i', join(outputDirectory, `frame-%0${digits}d.png`),
-        ...(highColor
-          ? [
-              '-c:v', 'prores_ks', '-profile:v', '3',
-              '-pix_fmt', 'yuv422p10le',
-              '-vf', `${scaleFilter},format=yuv422p10le`
-            ]
-          : [
-              '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
-              '-pix_fmt', 'yuv420p',
-              '-vf', `${scaleFilter},format=yuv420p`
-            ]),
+        '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
+        '-pix_fmt', 'yuv420p',
+        '-vf', `${scaleFilter},format=yuv420p`,
         '-color_primaries', 'bt709',
         '-color_trc', 'bt709',
         '-colorspace', 'bt709',
-        ...(highColor ? [] : ['-movflags', '+faststart']),
+        '-movflags', '+faststart',
         '-y', output
       ])
       const video = await readFile(output)
-      setHeader(event, 'Content-Type', highColor ? 'video/quicktime' : 'video/mp4')
+      setHeader(event, 'Content-Type', 'video/mp4')
       return video
     }
 
