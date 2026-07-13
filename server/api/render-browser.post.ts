@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { chromium } from 'playwright'
 
 type RenderSettings = {
@@ -43,6 +44,20 @@ type RenderSettings = {
   previewHeight?: number
   previewViewportWidth?: number
   previewViewportHeight?: number
+}
+
+const renderStreamContentType = 'application/x-resizer-render-stream'
+const renderStreamHeartbeat = 0
+const renderStreamResult = 1
+const renderStreamError = 2
+
+function createRenderStreamFrame(type: number, data: Uint8Array = new Uint8Array()) {
+  const header = Buffer.allocUnsafe(5)
+  header.writeUInt8(type, 0)
+  header.writeUInt32BE(data.byteLength, 1)
+  return data.byteLength
+    ? Buffer.concat([header, Buffer.from(data)])
+    : header
 }
 
 function runFfmpeg(args: string[]) {
@@ -179,9 +194,21 @@ export default defineEventHandler(async event => {
   await mkdir(sourceDirectory)
   await mkdir(outputDirectory)
   const digits = String(frameCount).length
-  const browser = await chromium.launch({ headless: true })
+  const responseStream = new PassThrough()
+  setHeader(event, 'Content-Type', renderStreamContentType)
+  setHeader(event, 'Cache-Control', 'no-cache, no-transform')
+  setHeader(event, 'Content-Encoding', 'identity')
+  setHeader(event, 'X-Accel-Buffering', 'no')
+  responseStream.write(createRenderStreamFrame(renderStreamHeartbeat))
+  const heartbeat = setInterval(() => {
+    if (!responseStream.destroyed) {
+      responseStream.write(createRenderStreamFrame(renderStreamHeartbeat))
+    }
+  }, 15_000)
 
-  try {
+  void (async () => {
+    const browser = await chromium.launch({ headless: true })
+    try {
     const page = await browser.newPage({
       viewport: { width: viewportWidth, height: viewportHeight },
       deviceScaleFactor: 2
@@ -617,8 +644,8 @@ export default defineEventHandler(async event => {
         '-y', output
       ])
       const video = await readFile(output)
-      setHeader(event, 'Content-Type', 'video/mp4')
-      return video
+      responseStream.write(createRenderStreamFrame(renderStreamResult, video))
+      return
     }
 
     const names = (await readdir(outputDirectory)).filter(name => name.endsWith('.png')).sort()
@@ -627,10 +654,30 @@ export default defineEventHandler(async event => {
       data: new Uint8Array(await readFile(join(outputDirectory, name)))
     })))
     const zip = createZip(files)
-    setHeader(event, 'Content-Type', 'application/zip')
-    return zip
-  } finally {
-    await browser.close()
-    await rm(directory, { recursive: true, force: true })
-  }
+    responseStream.write(createRenderStreamFrame(renderStreamResult, zip))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Browser render failed.'
+      responseStream.write(createRenderStreamFrame(
+        renderStreamError,
+        new TextEncoder().encode(message)
+      ))
+    } finally {
+      clearInterval(heartbeat)
+      await browser.close().catch(() => {})
+      await rm(directory, { recursive: true, force: true })
+      responseStream.end()
+    }
+  })().catch(async error => {
+    clearInterval(heartbeat)
+    await rm(directory, { recursive: true, force: true }).catch(() => {})
+    const message = error instanceof Error ? error.message : 'Browser renderer failed to start.'
+    if (!responseStream.destroyed) {
+      responseStream.end(createRenderStreamFrame(
+        renderStreamError,
+        new TextEncoder().encode(message)
+      ))
+    }
+  })
+
+  return sendStream(event, responseStream)
 })

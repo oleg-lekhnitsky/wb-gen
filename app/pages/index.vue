@@ -2225,6 +2225,70 @@ async function checkRemoteRenderer() {
   }
 }
 
+async function readRenderResponse(response: Response, outputType: string) {
+  const responseType = response.headers.get('content-type') || ''
+  if (!responseType.includes('application/x-resizer-render-stream')) {
+    return response.blob()
+  }
+  if (!response.body) {
+    throw new Error('The renderer returned an empty response stream.')
+  }
+
+  const reader = response.body.getReader()
+  const header = new Uint8Array(5)
+  const resultChunks: Uint8Array[] = []
+  const errorChunks: Uint8Array[] = []
+  let headerLength = 0
+  let frameType: number | null = null
+  let frameBytesRemaining = 0
+  let resultComplete = false
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    let offset = 0
+
+    while (offset < value.byteLength) {
+      if (frameType === null) {
+        const headerBytes = Math.min(5 - headerLength, value.byteLength - offset)
+        header.set(value.subarray(offset, offset + headerBytes), headerLength)
+        headerLength += headerBytes
+        offset += headerBytes
+        if (headerLength < 5) continue
+
+        frameType = header[0] ?? null
+        frameBytesRemaining = new DataView(header.buffer).getUint32(1)
+        headerLength = 0
+        if (frameBytesRemaining === 0) {
+          if (frameType === 1) resultComplete = true
+          frameType = null
+        }
+        continue
+      }
+
+      const payloadBytes = Math.min(frameBytesRemaining, value.byteLength - offset)
+      const payload = value.slice(offset, offset + payloadBytes)
+      if (frameType === 1) resultChunks.push(payload)
+      if (frameType === 2) errorChunks.push(payload)
+      offset += payloadBytes
+      frameBytesRemaining -= payloadBytes
+
+      if (frameBytesRemaining === 0) {
+        if (frameType === 1) resultComplete = true
+        frameType = null
+      }
+    }
+  }
+
+  if (errorChunks.length) {
+    throw new Error(await new Blob(errorChunks).text())
+  }
+  if (!resultComplete) {
+    throw new Error('The renderer connection closed before the output was ready.')
+  }
+  return new Blob(resultChunks, { type: outputType })
+}
+
 async function fetchRenderEndpoint(path: string, formData: FormData) {
   if (useLocalRenderer.value) {
     const localConnected = localRendererStatus.value === 'connected'
@@ -2252,6 +2316,7 @@ async function fetchRenderEndpoint(path: string, formData: FormData) {
       return response
     } catch {
       remoteRendererStatus.value = 'unavailable'
+      throw new Error('The Railway renderer connection was lost. Please try the render again.')
     }
   }
 
@@ -2631,7 +2696,10 @@ async function renderSequence() {
       throw new Error(message || 'Browser render failed.')
     }
 
-    const output = await response.blob()
+    const output = await readRenderResponse(
+      response,
+      exportFormat.value === 'mp4' ? 'video/mp4' : 'application/zip'
+    )
     const url = URL.createObjectURL(output)
     const link = document.createElement('a')
     link.href = url
@@ -4032,7 +4100,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             <strong>Local renderer</strong>
             <small v-if="!useLocalRenderer && remoteRendererStatus === 'connected'">Railway renderer connected</small>
             <small v-else-if="!useLocalRenderer && remoteRendererStatus === 'checking'">Checking Railway renderer…</small>
-            <small v-else-if="!useLocalRenderer && remoteRendererOrigin">Railway unavailable; uses current website server</small>
+            <small v-else-if="!useLocalRenderer && remoteRendererOrigin">Railway renderer unavailable</small>
             <small v-else-if="!useLocalRenderer">Uses the current website server</small>
             <small v-else-if="localRendererStatus === 'connected'">Connected at 127.0.0.1:3000</small>
             <small v-else-if="localRendererStatus === 'checking'">Checking connection…</small>
@@ -4081,7 +4149,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             exportFormat === 'mp4'
               ? useLocalRenderer && localRendererStatus === 'connected'
                 ? 'Frames are rendered and converted to H.264 MP4 on this computer.'
-                : remoteRendererStatus === 'connected'
+                : remoteRendererOrigin
                   ? 'Frames are rendered and converted to H.264 MP4 by the Railway renderer.'
                   : 'Frames are converted to H.264 MP4 by the current website server. FFmpeg is required on its host.'
               : 'Downloads a ZIP containing numbered PNG frames.'

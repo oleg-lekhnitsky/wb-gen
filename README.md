@@ -98,4 +98,4 @@ Set the following variable on the Vercel deployment and redeploy it:
 NUXT_PUBLIC_RENDERER_ORIGIN=https://your-renderer.up.railway.app
 ```
 
-The deployed editor tries the local renderer first when explicitly enabled, then the configured Railway renderer, then its existing same-origin API as a fallback.
+The deployed editor tries the local renderer first when explicitly enabled, then the configured Railway renderer. Railway responses send periodic heartbeat frames so long renders stay connected through its public proxy. If Railway is configured but unavailable, the editor reports the connection error instead of retrying a large render through Vercel. The same-origin API remains the fallback only when no remote renderer is configured.
