@@ -4,6 +4,11 @@ export default defineNuxtConfig({
   devtools: { enabled: process.env.NUXT_RENDER_MODE !== 'true' },
   modules: ['@nuxt/fonts', '@nuxt/image'],
   css: ['~/assets/css/global.css', '~/assets/css/narrow-layout.css', '~/assets/css/legal.css'],
+  runtimeConfig: {
+    public: {
+      rendererOrigin: ''
+    }
+  },
   app: {
     head: {
       htmlAttrs: { lang: 'ru' },

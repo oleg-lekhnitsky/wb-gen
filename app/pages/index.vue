@@ -208,6 +208,10 @@ const aspectWorkspaceVersion = 1
 const storageKey = 'slot-animation-generator-settings-v1'
 const localRendererPreferenceKey = 'resizer-use-local-renderer-v1'
 const localRendererOrigin = 'http://127.0.0.1:3000'
+const runtimeConfig = useRuntimeConfig()
+const remoteRendererOrigin = String(runtimeConfig.public.rendererOrigin || '')
+  .trim()
+  .replace(/\/$/, '')
 const settingsDatabaseName = 'slot-animation-generator'
 const settingsStoreName = 'settings'
 const settingsRecordKey = 'current'
@@ -432,6 +436,7 @@ const exportStatus = ref('Preparing render')
 const exportError = ref('')
 const useLocalRenderer = ref(false)
 const localRendererStatus = ref<'idle' | 'checking' | 'connected' | 'unavailable'>('idle')
+const remoteRendererStatus = ref<'idle' | 'checking' | 'connected' | 'unavailable'>('idle')
 const controlsPanel = ref<HTMLElement | null>(null)
 const curveGraph = ref<SVGSVGElement | null>(null)
 const packshotContainer = ref<HTMLElement | null>(null)
@@ -2194,20 +2199,63 @@ async function updateLocalRendererPreference() {
   await checkLocalRenderer()
 }
 
-async function fetchRenderEndpoint(path: string, formData: FormData) {
-  if (!useLocalRenderer.value || localRendererStatus.value !== 'connected') {
-    return fetch(path, { method: 'POST', body: formData })
+async function checkRemoteRenderer() {
+  if (!remoteRendererOrigin) {
+    remoteRendererStatus.value = 'idle'
+    return false
   }
 
+  remoteRendererStatus.value = 'checking'
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 5000)
+
   try {
-    return await fetch(`${localRendererOrigin}${path}`, {
-      method: 'POST',
-      body: formData
+    const response = await fetch(`${remoteRendererOrigin}/api/local-renderer-health`, {
+      cache: 'no-store',
+      signal: controller.signal
     })
+    const result = response.ok
+    remoteRendererStatus.value = result ? 'connected' : 'unavailable'
+    return result
   } catch {
-    localRendererStatus.value = 'unavailable'
-    return fetch(path, { method: 'POST', body: formData })
+    remoteRendererStatus.value = 'unavailable'
+    return false
+  } finally {
+    window.clearTimeout(timeout)
   }
+}
+
+async function fetchRenderEndpoint(path: string, formData: FormData) {
+  if (useLocalRenderer.value) {
+    const localConnected = localRendererStatus.value === 'connected'
+      || await checkLocalRenderer()
+
+    if (localConnected) {
+      try {
+        return await fetch(`${localRendererOrigin}${path}`, {
+          method: 'POST',
+          body: formData
+        })
+      } catch {
+        localRendererStatus.value = 'unavailable'
+      }
+    }
+  }
+
+  if (remoteRendererOrigin) {
+    try {
+      const response = await fetch(`${remoteRendererOrigin}${path}`, {
+        method: 'POST',
+        body: formData
+      })
+      remoteRendererStatus.value = 'connected'
+      return response
+    } catch {
+      remoteRendererStatus.value = 'unavailable'
+    }
+  }
+
+  return fetch(path, { method: 'POST', body: formData })
 }
 
 async function downloadMp4(
@@ -3229,6 +3277,7 @@ onMounted(async () => {
   await loadSettings()
   useLocalRenderer.value = localStorage.getItem(localRendererPreferenceKey) === 'true'
   if (useLocalRenderer.value) void checkLocalRenderer()
+  if (remoteRendererOrigin) void checkRemoteRenderer()
   recordUndoSnapshot()
   initPackshotAnimation()
   restartAutoplay()
@@ -3981,7 +4030,10 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         <label class="direction-toggle local-renderer-toggle">
           <span>
             <strong>Local renderer</strong>
-            <small v-if="!useLocalRenderer">Uses the current website server</small>
+            <small v-if="!useLocalRenderer && remoteRendererStatus === 'connected'">Railway renderer connected</small>
+            <small v-else-if="!useLocalRenderer && remoteRendererStatus === 'checking'">Checking Railway renderer…</small>
+            <small v-else-if="!useLocalRenderer && remoteRendererOrigin">Railway unavailable; uses current website server</small>
+            <small v-else-if="!useLocalRenderer">Uses the current website server</small>
             <small v-else-if="localRendererStatus === 'connected'">Connected at 127.0.0.1:3000</small>
             <small v-else-if="localRendererStatus === 'checking'">Checking connection…</small>
             <small v-else>Not found; current server remains available</small>
@@ -4029,7 +4081,9 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             exportFormat === 'mp4'
               ? useLocalRenderer && localRendererStatus === 'connected'
                 ? 'Frames are rendered and converted to H.264 MP4 on this computer.'
-                : 'Frames are converted to H.264 MP4 by the current website server. FFmpeg is required on its host.'
+                : remoteRendererStatus === 'connected'
+                  ? 'Frames are rendered and converted to H.264 MP4 by the Railway renderer.'
+                  : 'Frames are converted to H.264 MP4 by the current website server. FFmpeg is required on its host.'
               : 'Downloads a ZIP containing numbered PNG frames.'
           }}
           Large resolutions and frame rates use significant memory.

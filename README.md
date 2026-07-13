@@ -87,3 +87,15 @@ On its first run, the launcher:
 - starts the renderer at `http://127.0.0.1:3000` and opens the website.
 
 If Homebrew is not installed and Node 22 or FFmpeg is missing, the launcher stops with instructions instead of modifying the system without a package manager.
+
+## Railway renderer
+
+Railway uses the root `Dockerfile` to build the same Nuxt application with Playwright Chromium and FFmpeg. Configure `/api/local-renderer-health` as the service healthcheck and generate a public Railway domain.
+
+Set the following variable on the Vercel deployment and redeploy it:
+
+```text
+NUXT_PUBLIC_RENDERER_ORIGIN=https://your-renderer.up.railway.app
+```
+
+The deployed editor tries the local renderer first when explicitly enabled, then the configured Railway renderer, then its existing same-origin API as a fallback.
