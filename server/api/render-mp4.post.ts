@@ -60,8 +60,19 @@ export default defineEventHandler(async event => {
       '-c:v', 'libx264',
       '-preset', 'medium',
       '-crf', '18',
+      '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited',
       '-pix_fmt', 'yuv420p',
-      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+      '-vf', `${[
+        'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        'flags=lanczos+accurate_rnd+full_chroma_int',
+        'in_range=full',
+        'out_range=limited',
+        'out_color_matrix=bt709'
+      ].join(':')},format=yuv420p`,
+      '-color_primaries', 'bt709',
+      '-color_trc', 'bt709',
+      '-colorspace', 'bt709',
+      '-color_range', 'tv',
       '-movflags', '+faststart',
       '-y',
       outputPath

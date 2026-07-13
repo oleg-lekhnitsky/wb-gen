@@ -593,18 +593,26 @@ export default defineEventHandler(async event => {
     ])
 
     if (settings.exportFormat === 'mp4') {
-      const scaleFilter = 'scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos+accurate_rnd+full_chroma_int'
+      const scaleFilter = [
+        'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        'flags=lanczos+accurate_rnd+full_chroma_int',
+        'in_range=full',
+        'out_range=limited',
+        'out_color_matrix=bt709'
+      ].join(':')
       const output = join(directory, 'animation.mp4')
       await runFfmpeg([
         '-hide_banner', '-loglevel', 'error',
         '-framerate', String(fps),
         '-i', join(outputDirectory, `frame-%0${digits}d.png`),
         '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
+        '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited',
         '-pix_fmt', 'yuv420p',
         '-vf', `${scaleFilter},format=yuv420p`,
         '-color_primaries', 'bt709',
         '-color_trc', 'bt709',
         '-colorspace', 'bt709',
+        '-color_range', 'tv',
         '-movflags', '+faststart',
         '-y', output
       ])
