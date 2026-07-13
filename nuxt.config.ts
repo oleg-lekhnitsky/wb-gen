@@ -7,7 +7,10 @@ export default defineNuxtConfig({
   app: {
     head: {
       htmlAttrs: { lang: 'ru' },
-      title: 'Slot Animation Generator',
+      title: 'Resizer',
+      link: [
+        { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }
+      ],
       meta: [
         {
           name: 'description',
