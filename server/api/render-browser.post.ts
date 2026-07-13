@@ -226,9 +226,11 @@ export default defineEventHandler(async event => {
       responseStream.write(createRenderStreamFrame(renderStreamHeartbeat))
     }
   }, 15_000)
+  const renderStartedAt = performance.now()
 
   void (async () => {
     const browser = await chromium.launch({ headless: true })
+    const browserReadyAt = performance.now()
     try {
     const page = await browser.newPage({
       viewport: { width: viewportWidth, height: viewportHeight },
@@ -352,6 +354,9 @@ export default defineEventHandler(async event => {
     )
 
     const renderProgressStep = Math.max(1, Math.ceil(frameCount / 100))
+    const frameCaptureStartedAt = performance.now()
+    let frameSetupMilliseconds = 0
+    let screenshotMilliseconds = 0
     for (let frame = 0; frame < frameCount; frame += 1) {
       const time = Math.min(frame / fps, duration)
       let currentIndex = 0
@@ -397,6 +402,7 @@ export default defineEventHandler(async event => {
         ? packshotElapsed / packshotDuration
         : Math.min(1, Math.max(0, packshotElapsed / packshotDuration))
 
+      const frameSetupStartedAt = performance.now()
       await page.evaluate(
         ({
           currentIndex,
@@ -421,7 +427,17 @@ export default defineEventHandler(async event => {
           time
         }) => {
           const root = document.querySelector('.slot-stage--main')
-          const seekVideos = Array.from(root?.querySelectorAll<HTMLVideoElement>('.draggable-background video') || [])
+          const visibleVideos = Array.from(root?.querySelectorAll<HTMLElement>('.slot-panel') || [])
+            .flatMap(panel => {
+              const slides = Array.from(panel.querySelectorAll<HTMLElement>('.slot-slide'))
+              const visibleSlides = transition && nextIndex !== currentIndex
+                ? [slides[currentIndex], slides[nextIndex]]
+                : [slides[currentIndex]]
+              return visibleSlides.flatMap(slide =>
+                Array.from(slide?.querySelectorAll<HTMLVideoElement>('.draggable-background video') || [])
+              )
+            })
+          const seekVideos = visibleVideos
             .map(video => new Promise<void>(resolve => {
               video.muted = true
               video.pause()
@@ -624,10 +640,13 @@ export default defineEventHandler(async event => {
           time
         }
       )
+      frameSetupMilliseconds += performance.now() - frameSetupStartedAt
+      const screenshotStartedAt = performance.now()
       await stage.screenshot({
         path: join(sourceDirectory, `frame-${String(frame + 1).padStart(digits, '0')}.png`),
         animations: 'disabled'
       })
+      screenshotMilliseconds += performance.now() - screenshotStartedAt
       const completedFrames = frame + 1
       if (completedFrames % renderProgressStep === 0 || completedFrames === frameCount) {
         sendProgress(
@@ -636,6 +655,18 @@ export default defineEventHandler(async event => {
         )
       }
     }
+    const frameCaptureMilliseconds = performance.now() - frameCaptureStartedAt
+    console.info('[render-browser] frame capture complete', {
+      frames: frameCount,
+      width,
+      height,
+      browserStartMs: Math.round(browserReadyAt - renderStartedAt),
+      pageSetupMs: Math.round(frameCaptureStartedAt - browserReadyAt),
+      frameSetupMs: Math.round(frameSetupMilliseconds),
+      screenshotMs: Math.round(screenshotMilliseconds),
+      frameCaptureMs: Math.round(frameCaptureMilliseconds),
+      averageFrameMs: Math.round(frameCaptureMilliseconds / frameCount)
+    })
 
     const resizeFilter = `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height}`
 
