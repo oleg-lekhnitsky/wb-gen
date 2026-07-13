@@ -1,0 +1,49 @@
+@font-face {
+  font-family: "Roboto Flex";
+  src: url("../RobotoFlex.ttf") format("truetype-variations");
+  font-weight: 100 1000;
+  font-stretch: 25% 151%;
+  font-style: oblique -10deg 0deg;
+  font-display: swap;
+}
+
+:root {
+  --legal-current-font: "InterVariable", "Inter", Arial, sans-serif;
+  --legal-roboto-flex-font: "Roboto Flex", "InterVariable", "Inter", Arial, sans-serif;
+  --legal-font-family: var(--legal-current-font);
+
+  --legal-font-weight: 400;
+  --legal-line-height: .9;
+  --legal-letter-spacing: 0;
+
+  --legal-font-feature-settings: "kern" 1, "liga" 1, "calt" 1, "pnum" 1;
+  --legal-font-variation-settings:
+    "opsz" 50,
+    "wght" var(--legal-font-weight),
+    "GRAD" 0,
+    "wdth" 25,
+    "slnt" 0,
+    "XOPQ" 96,
+    "YOPQ" 79,
+    "XTRA" 468,
+    "YTUC" 712,
+    "YTLC" 514,
+    "YTAS" 750,
+    "YTDE" -203,
+    "YTFI" 738;
+}
+
+.slide-legal {
+  text-transform: uppercase;
+  font-family: var(--legal-font-family);
+  font-weight: var(--legal-font-weight);
+  line-height: var(--legal-line-height);
+  letter-spacing: var(--legal-letter-spacing);
+  font-feature-settings: var(--legal-font-feature-settings);
+  font-variation-settings: var(--legal-font-variation-settings);
+}
+
+.slide-legal {
+  /* Switch to Roboto Flex by changing this value to var(--legal-roboto-flex-font). */
+  --legal-font-family: var(--legal-roboto-flex-font);
+}

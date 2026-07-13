@@ -1,35 +1,89 @@
 <script setup lang="ts">
 import type { AnimationItem } from 'lottie-web'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import AnimatedSlideCopy from '~/components/AnimatedSlideCopy.vue'
+import AspectPreviewGrid from '~/components/AspectPreviewGrid.vue'
+import BackgroundSelector from '~/components/BackgroundSelector.vue'
+import DraggableBackground from '~/components/DraggableBackground.vue'
+import PresetControls from '~/components/PresetControls.vue'
+import SlideEditActions from '~/components/SlideEditActions.vue'
+import SlideSelector from '~/components/SlideSelector.vue'
+import StageZoomControl from '~/components/StageZoomControl.vue'
+import TextControls from '~/components/TextControls.vue'
+import UndoShortcut from '~/components/UndoShortcut.vue'
 import packshotAnimationData from '~/assets/packshot.json'
+import defaultLogo from '~/assets/wb taxi.svg'
+import defaultLogoSvg from '~/assets/wb taxi.svg?raw'
 
 type Slide = {
   backgroundImage: string
+  backgroundImageX?: number
+  backgroundImageY?: number
+  backgroundImageScale?: number
   backgroundColor: string
-  backgroundPreset: 'solid' | 'split'
+  backgroundPreset: 'solid' | 'split' | 'checker'
   splitAngle: number
+  checkerCells: number
   heading: string
   headingSize: number
   subheading: string
+  subheadingSize: number
   logo: string
   logoWidth: number
   logoHeight: number
   legalText: string
+  legalSize: number
+  legalOpacity: number
+  legalShadow: boolean
+  legalShadowOpacity: number
 }
 
 type PanelSide = 'left' | 'right'
+type AspectSlideFields = Pick<
+  Slide,
+  | 'heading'
+  | 'headingSize'
+  | 'subheading'
+  | 'subheadingSize'
+  | 'logo'
+  | 'logoWidth'
+  | 'logoHeight'
+  | 'legalText'
+  | 'legalSize'
+  | 'legalOpacity'
+  | 'legalShadow'
+  | 'legalShadowOpacity'
+  | 'backgroundImageX'
+  | 'backgroundImageY'
+  | 'backgroundImageScale'
+> & Partial<Pick<Slide, 'backgroundColor' | 'backgroundPreset' | 'splitAngle' | 'checkerCells'>>
+type AspectSlideSettings = Record<PanelSide, AspectSlideFields[]>
 type PackshotRenderer = 'canvas' | 'svg'
 type PackshotPlayback = 'once' | 'loop'
+type Mp4Chroma = 'compatible' | 'high'
 type AspectPreset = {
   label: string
   width: number
   height: number
   exportWidth: number
   exportHeight: number
+  pack?: string
+  custom?: boolean
+}
+
+type AspectPack = {
+  id: string
+  label: string
+  editable?: boolean
 }
 
 type PersistedSettings = {
   panelSlides: Record<PanelSide, Slide[]>
+  aspectWorkspaceVersion?: number
+  aspectSlideSettings?: Record<string, AspectSlideSettings>
+  aspectPackshotWidths?: Record<string, number>
+  customAspectPresets?: AspectPreset[]
+  customAspectPacks?: AspectPack[]
   selectedPanel: PanelSide
   selectedIndex: number
   requestedSlideCount: number
@@ -47,10 +101,15 @@ type PersistedSettings = {
   exportFps: number
   exportPrefix: string
   exportFormat: 'png' | 'mp4'
+  mp4Chroma?: Mp4Chroma
   aspectWidth: number
   aspectHeight: number
   reverseDirections: boolean
+  narrowHorizontalAnimation?: boolean
+  textLineTransition?: boolean
   swapVerticalPanels: boolean
+  swapHorizontalPanels?: boolean
+  swapUltraNarrowPanels?: boolean
   loopSlides: boolean
   showPackshotOnFinalSlide: boolean
   packshotWidth: number
@@ -69,11 +128,13 @@ type PersistedSettings = {
 declare global {
   interface Window {
     __packshotAnimation?: AnimationItem | null
+    __slotAnimationRenderSettings?: Partial<PersistedSettings>
+    __slotAnimationRenderSettingsLoaded?: boolean
   }
 }
 
 const panelSides: PanelSide[] = ['left', 'right']
-const aspectPresets: AspectPreset[] = [
+const quickAspectPresets: AspectPreset[] = [
   { label: '16:9', width: 16, height: 9, exportWidth: 1920, exportHeight: 1080 },
   { label: '4:3', width: 4, height: 3, exportWidth: 1600, exportHeight: 1200 },
   { label: '3:2', width: 3, height: 2, exportWidth: 1800, exportHeight: 1200 },
@@ -81,7 +142,86 @@ const aspectPresets: AspectPreset[] = [
   { label: '4:5', width: 4, height: 5, exportWidth: 1080, exportHeight: 1350 },
   { label: '9:16', width: 9, height: 16, exportWidth: 1080, exportHeight: 1920 }
 ]
+const aspectPacks: AspectPack[] = [
+  { id: 'google', label: 'Google' },
+  { id: 'yandex', label: 'Yandex' }
+]
+const defaultCustomAspectPacks: AspectPack[] = [
+  { id: 'custom', label: 'Custom', editable: true }
+]
+const defaultCustomAspectPresets: AspectPreset[] = quickAspectPresets.map(preset => ({
+  ...preset,
+  pack: 'custom',
+  custom: true
+}))
+const createAdAspectPreset = (width: number, height: number, pack: string): AspectPreset => ({
+  label: `${width}x${height}`,
+  width,
+  height,
+  exportWidth: width,
+  exportHeight: height,
+  pack
+})
+const googleAspectSizes: Array<[number, number]> = [
+  [120, 600],
+  [160, 600],
+  [250, 250],
+  [300, 1050],
+  [300, 50],
+  [300, 100],
+  [300, 250],
+  [300, 600],
+  [320, 320],
+  [320, 50],
+  [320, 100],
+  [320, 480],
+  [336, 280],
+  [360, 592],
+  [360, 640],
+  [375, 667],
+  [468, 60],
+  [728, 90],
+  [800, 250],
+  [970, 250],
+  [970, 90]
+]
+const yandexAspectSizes: Array<[number, number]> = [
+  [160, 600],
+  [240, 400],
+  [240, 600],
+  [300, 250],
+  [300, 300],
+  [480, 320],
+  [336, 280],
+  [300, 500],
+  [320, 480],
+  [300, 600],
+  [970, 250],
+  [1000, 120],
+  [728, 90],
+  [320, 100],
+  [320, 50]
+]
+const aspectPresets: AspectPreset[] = [
+  ...googleAspectSizes.map(([width, height]) => createAdAspectPreset(width, height, 'google')),
+  ...yandexAspectSizes.map(([width, height]) => createAdAspectPreset(width, height, 'yandex'))
+]
+const aspectWorkspaceVersion = 1
 const storageKey = 'slot-animation-generator-settings-v1'
+const settingsDatabaseName = 'slot-animation-generator'
+const settingsStoreName = 'settings'
+const settingsRecordKey = 'current'
+const minExportDimension = 1
+const maxExportDimension = 3840
+const invertedDefaultLogo = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+  defaultLogoSvg
+    .replaceAll('fill="#FF00FF"', 'fill="__BRAND_PINK__"')
+    .replaceAll('fill="white"', 'fill="#FF00FF"')
+    .replaceAll('fill="__BRAND_PINK__"', 'fill="white"')
+)}`
+const purpleLetterDefaultLogo = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+  defaultLogoSvg.replaceAll('fill="#FF00FF"', 'fill="#7f30e3"')
+)}`
 const panelSlides = ref<Record<PanelSide, Slide[]>>({
   left: [
     {
@@ -89,52 +229,76 @@ const panelSlides = ref<Record<PanelSide, Slide[]>>({
       backgroundColor: '#ff00ff',
       backgroundPreset: 'solid',
       splitAngle: 90,
+      checkerCells: 6,
       heading: 'Новый уровень',
       headingSize: 100,
       subheading: 'Быстро и удобно',
+      subheadingSize: 100,
       logo: 'WB',
       logoWidth: 40,
       logoHeight: 52,
-      legalText: 'Реклама · 18+'
+      legalText: 'Реклама · 18+',
+      legalSize: 100,
+      legalOpacity: 72,
+      legalShadow: false,
+      legalShadowOpacity: 35
     },
     {
       backgroundImage: '',
       backgroundColor: '#7f30e3',
       backgroundPreset: 'solid',
       splitAngle: 90,
+      checkerCells: 6,
       heading: 'Ваш город',
       headingSize: 100,
       subheading: 'Выбирайте маршрут',
+      subheadingSize: 100,
       logo: 'WB',
       logoWidth: 40,
       logoHeight: 52,
-      legalText: ''
+      legalText: '',
+      legalSize: 100,
+      legalOpacity: 72,
+      legalShadow: false,
+      legalShadowOpacity: 35
     },
     {
       backgroundImage: '',
       backgroundColor: '#ff00ff',
       backgroundPreset: 'solid',
       splitAngle: 90,
+      checkerCells: 6,
       heading: 'Ваш ритм',
       headingSize: 100,
       subheading: 'Свободный график',
+      subheadingSize: 100,
       logo: 'WB',
       logoWidth: 40,
       logoHeight: 52,
-      legalText: 'Подробности на сайте'
+      legalText: 'Подробности на сайте',
+      legalSize: 100,
+      legalOpacity: 72,
+      legalShadow: false,
+      legalShadowOpacity: 35
     },
     {
       backgroundImage: '',
       backgroundColor: '#7f30e3',
       backgroundPreset: 'solid',
       splitAngle: 90,
+      checkerCells: 6,
       heading: 'Поехали',
       headingSize: 100,
       subheading: 'Всё готово',
+      subheadingSize: 100,
       logo: 'WB',
       logoWidth: 40,
       logoHeight: 52,
-      legalText: ''
+      legalText: '',
+      legalSize: 100,
+      legalOpacity: 72,
+      legalShadow: false,
+      legalShadowOpacity: 35
     }
   ],
   right: [
@@ -143,55 +307,83 @@ const panelSlides = ref<Record<PanelSide, Slide[]>>({
       backgroundColor: '#7f30e3',
       backgroundPreset: 'solid',
       splitAngle: 90,
-      heading: 'Движение каждый день',
+      checkerCells: 6,
+      heading: 'right slide 1',
       headingSize: 100,
       subheading: 'Новые возможности',
+      subheadingSize: 100,
       logo: 'Taxi',
       logoWidth: 40,
       logoHeight: 52,
-      legalText: ''
+      legalText: '',
+      legalSize: 100,
+      legalOpacity: 72,
+      legalShadow: false,
+      legalShadowOpacity: 35
     },
     {
       backgroundImage: '',
       backgroundColor: '#ff00ff',
       backgroundPreset: 'solid',
       splitAngle: 90,
+      checkerCells: 6,
       heading: 'Ваши правила',
       headingSize: 100,
       subheading: 'Начинайте поездку',
+      subheadingSize: 100,
       logo: 'Taxi',
       logoWidth: 40,
       logoHeight: 52,
-      legalText: 'Условия действуют в приложении'
+      legalText: 'Условия действуют в приложении',
+      legalSize: 100,
+      legalOpacity: 72,
+      legalShadow: false,
+      legalShadowOpacity: 35
     },
     {
       backgroundImage: '',
       backgroundColor: '#7f30e3',
       backgroundPreset: 'solid',
       splitAngle: 90,
+      checkerCells: 6,
       heading: 'Понятные условия',
       headingSize: 100,
       subheading: 'Работайте с комфортом',
+      subheadingSize: 100,
       logo: 'Taxi',
       logoWidth: 40,
       logoHeight: 52,
-      legalText: ''
+      legalText: '',
+      legalSize: 100,
+      legalOpacity: 72,
+      legalShadow: false,
+      legalShadowOpacity: 35
     },
     {
       backgroundImage: '',
       backgroundColor: '#ff00ff',
       backgroundPreset: 'solid',
       splitAngle: 90,
+      checkerCells: 6,
       heading: 'Начните сейчас',
       headingSize: 100,
       subheading: 'Один шаг до старта',
+      subheadingSize: 100,
       logo: 'Taxi',
       logoWidth: 40,
       logoHeight: 52,
-      legalText: '18+'
+      legalText: '18+',
+      legalSize: 100,
+      legalOpacity: 72,
+      legalShadow: false,
+      legalShadowOpacity: 35
     }
   ]
 })
+const aspectSlideSettings = ref<Record<string, AspectSlideSettings>>({})
+const aspectPackshotWidths = ref<Record<string, number>>({})
+const customAspectPresets = ref<AspectPreset[]>(defaultCustomAspectPresets.map(preset => ({ ...preset })))
+const customAspectPacks = ref<AspectPack[]>(defaultCustomAspectPacks.map(pack => ({ ...pack })))
 
 const selectedPanel = ref<PanelSide>('left')
 const selectedIndex = ref(0)
@@ -214,10 +406,15 @@ const exportHeight = ref(1080)
 const exportFps = ref(30)
 const exportPrefix = ref('slot-animation')
 const exportFormat = ref<'png' | 'mp4'>('mp4')
+const mp4Chroma = ref<Mp4Chroma>('compatible')
 const aspectWidth = ref(16)
 const aspectHeight = ref(9)
 const reverseDirections = ref(false)
+const narrowHorizontalAnimation = ref(false)
+const textLineTransition = ref(false)
 const swapVerticalPanels = ref(false)
+const swapHorizontalPanels = ref(false)
+const swapUltraNarrowPanels = ref(false)
 const loopSlides = ref(true)
 const showPackshotOnFinalSlide = ref(false)
 const packshotWidth = ref(28)
@@ -227,8 +424,10 @@ const packshotStartFrame = ref(0)
 const packshotEndFrame = ref(30)
 const packshotStartOffsetSeconds = ref(0.45)
 const packshotDurationSeconds = ref(1)
+const previewZoom = ref(100)
 const packshotIsVisible = ref(false)
 const isExporting = ref(false)
+const isRenderingAspectGroup = ref(false)
 const exportProgress = ref(0)
 const exportStatus = ref('Preparing render')
 const exportError = ref('')
@@ -245,7 +444,10 @@ let packshotAnimationReady = false
 let autoplayTimer: ReturnType<typeof setInterval> | undefined
 let transitionTimer: ReturnType<typeof setTimeout> | undefined
 let saveTimer: ReturnType<typeof setTimeout> | undefined
+let undoSnapshotTimer: ReturnType<typeof setTimeout> | undefined
 let exportProgressTimer: ReturnType<typeof setInterval> | undefined
+const undoHistory: string[] = []
+const maxUndoHistory = 30
 
 const slideCount = computed(() => panelSlides.value.left.length)
 const transitionDuration = computed(() => transitionSeconds.value * 1000)
@@ -272,22 +474,77 @@ const exportFrameCount = computed(
   () => Math.max(1, Math.round(totalDuration.value * exportFps.value))
 )
 const isPortrait = computed(() => aspectHeight.value >= aspectWidth.value)
+const isUltraNarrow = computed(
+  () => !isPortrait.value && aspectWidth.value / aspectHeight.value >= 4
+)
+const activePanelSwap = computed(() => (
+  isPortrait.value
+    ? swapVerticalPanels.value
+    : isUltraNarrow.value
+      ? swapUltraNarrowPanels.value
+      : swapHorizontalPanels.value
+))
+const stagePanelSides = computed<PanelSide[]>(() => (
+  !isPortrait.value && activePanelSwap.value
+    ? ['right', 'left']
+    : panelSides
+))
 const shouldShowPackshot = computed(
   () =>
     showPackshotOnFinalSlide.value
     && packshotIsVisible.value
     && activeIndex.value === slideCount.value - 1
 )
+const previewZoomScale = computed(() => previewZoom.value / 100)
 const activeAspectLabel = computed(() => {
-  const preset = aspectPresets.find(
+  const preset = [...quickAspectPresets, ...allAspectPresets.value].find(
     item => item.width === aspectWidth.value && item.height === aspectHeight.value
   )
   return preset?.label || 'Custom'
 })
-const panelLabel = computed(() => {
-  if (!isPortrait.value) return selectedPanel.value
-  return selectedPanel.value === 'left' ? 'top' : 'bottom'
+const allAspectPresets = computed(() => [...aspectPresets, ...customAspectPresets.value])
+const allAspectPacks = computed(() => {
+  const primaryCustomPack = customAspectPacks.value.find(pack => pack.id === 'custom')
+  const additionalCustomPacks = customAspectPacks.value.filter(pack => pack.id !== 'custom')
+
+  return primaryCustomPack
+    ? [primaryCustomPack, ...aspectPacks, ...additionalCustomPacks]
+    : [...aspectPacks, ...additionalCustomPacks]
 })
+function getPanelLabel(side: PanelSide) {
+  if (!isPortrait.value) {
+    const isLeftPanel = activePanelSwap.value
+      ? side === 'right'
+      : side === 'left'
+    return isLeftPanel ? 'left' : 'right'
+  }
+
+  const isTopPanel = swapVerticalPanels.value
+    ? side === 'right'
+    : side === 'left'
+  return isTopPanel ? 'top' : 'bottom'
+}
+
+const panelLabel = computed(() => getPanelLabel(selectedPanel.value))
+
+const panelSwapButtonLabel = computed(() => {
+  if (isUltraNarrow.value) return 'Swap Narrow Left / Right'
+  return isPortrait.value ? 'Swap Top / Bottom' : 'Swap Left / Right'
+})
+
+function togglePanelSwap() {
+  if (isUltraNarrow.value) {
+    swapUltraNarrowPanels.value = !swapUltraNarrowPanels.value
+    return
+  }
+
+  if (isPortrait.value) {
+    swapVerticalPanels.value = !swapVerticalPanels.value
+    return
+  }
+
+  swapHorizontalPanels.value = !swapHorizontalPanels.value
+}
 const easingValue = computed(
   () => `cubic-bezier(${curve.value.x1}, ${curve.value.y1}, ${curve.value.x2}, ${curve.value.y2})`
 )
@@ -307,51 +564,348 @@ const selectedSlide = computed(
   () => panelSlides.value[selectedPanel.value][selectedIndex.value]
 )
 
+function rangeStyle(value: number, min: number, max: number) {
+  const progress = ((value - min) / (max - min)) * 100
+  const clampedProgress = Math.min(100, Math.max(0, progress))
+
+  return { '--range-progress': `${clampedProgress}%` }
+}
+
+function gcd(a: number, b: number): number {
+  return b === 0 ? a : gcd(b, a % b)
+}
+
+function getAspectKey(width = aspectWidth.value, height = aspectHeight.value) {
+  const roundedWidth = Math.max(1, Math.round(width))
+  const roundedHeight = Math.max(1, Math.round(height))
+  const divisor = gcd(roundedWidth, roundedHeight)
+  return `${roundedWidth / divisor}:${roundedHeight / divisor}`
+}
+
+function normalizeAspectKey(key: string) {
+  const parts = key.split(':')
+  const width = Number.parseInt(parts[0] ?? '', 10)
+  const height = Number.parseInt(parts[1] ?? '', 10)
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return key
+  }
+
+  return getAspectKey(width, height)
+}
+
+function normalizeBackgroundImageX(value: number | undefined) {
+  return Math.max(-500, Math.min(600, typeof value === 'number' ? value : 50))
+}
+
+function normalizeBackgroundImageY(value: number | undefined) {
+  return Math.max(-500, Math.min(600, typeof value === 'number' ? value : 50))
+}
+
+function normalizeBackgroundImageScale(value: number | undefined) {
+  return Math.max(0.2, Math.min(6, typeof value === 'number' ? value : 1))
+}
+
+function normalizeBackgroundPreset(value: Slide['backgroundPreset'] | undefined) {
+  return value === 'split' || value === 'checker' ? value : 'solid'
+}
+
+function normalizeSplitAngle(value: number | undefined) {
+  return Math.max(0, Math.min(359, Math.round(typeof value === 'number' ? value : 90)))
+}
+
+function normalizeCheckerCells(value: number | undefined) {
+  const cellCount = Math.round(typeof value === 'number' ? value : 6)
+  return [2, 3, 4, 6, 8].includes(cellCount) ? cellCount : 6
+}
+
+function normalizePackshotWidth(value: number) {
+  return Math.max(5, Math.min(100, Math.round(Number.isFinite(value) ? value : 28)))
+}
+
+function getAspectSlideFields(slide: Slide): AspectSlideFields {
+  return {
+    backgroundColor: slide.backgroundColor,
+    backgroundPreset: slide.backgroundPreset,
+    splitAngle: slide.splitAngle,
+    checkerCells: normalizeCheckerCells(slide.checkerCells),
+    heading: slide.heading,
+    headingSize: slide.headingSize,
+    subheading: slide.subheading,
+    subheadingSize: slide.subheadingSize,
+    logo: slide.logo,
+    logoWidth: slide.logoWidth,
+    logoHeight: slide.logoHeight,
+    legalText: slide.legalText,
+    legalSize: slide.legalSize,
+    legalOpacity: slide.legalOpacity,
+    legalShadow: slide.legalShadow,
+    legalShadowOpacity: slide.legalShadowOpacity,
+    backgroundImageX: normalizeBackgroundImageX(slide.backgroundImageX),
+    backgroundImageY: normalizeBackgroundImageY(slide.backgroundImageY),
+    backgroundImageScale: normalizeBackgroundImageScale(slide.backgroundImageScale)
+  }
+}
+
+function captureAspectSlideSettings(): AspectSlideSettings {
+  return {
+    left: panelSlides.value.left.map(getAspectSlideFields),
+    right: panelSlides.value.right.map(getAspectSlideFields)
+  }
+}
+
+function storeCurrentAspectSettings() {
+  aspectSlideSettings.value[getAspectKey()] = captureAspectSlideSettings()
+  aspectPackshotWidths.value[getAspectKey()] = normalizePackshotWidth(packshotWidth.value)
+}
+
+function applyAspectSlideSettings(key: string) {
+  const settings = aspectSlideSettings.value[key]
+
+  if (!settings) {
+    aspectSlideSettings.value[key] = captureAspectSlideSettings()
+    return
+  }
+
+  for (const side of panelSides) {
+    for (const [index, slide] of panelSlides.value[side].entries()) {
+      const fields = settings[side]?.[index]
+      if (fields) Object.assign(slide, fields)
+    }
+  }
+}
+
+function applyAspectPackshotWidth(key: string) {
+  const width = aspectPackshotWidths.value[key]
+
+  if (typeof width === 'number') {
+    packshotWidth.value = normalizePackshotWidth(width)
+    return
+  }
+
+  aspectPackshotWidths.value[key] = normalizePackshotWidth(packshotWidth.value)
+}
+
+function applyAspectSettings(key: string) {
+  applyAspectSlideSettings(key)
+  applyAspectPackshotWidth(key)
+}
+
+function getAspectPreviewSlides(preset: AspectPreset): { left: Slide, right: Slide } {
+  const index = Math.min(activeIndex.value, panelSlides.value.left.length - 1)
+  const key = getAspectKey(preset.width, preset.height)
+  const currentKey = getAspectKey()
+  const settings = key === currentKey ? undefined : aspectSlideSettings.value[key]
+  const leftSlide = panelSlides.value.left[index] ?? createSlide('left', index)
+  const rightSlide = panelSlides.value.right[index] ?? createSlide('right', index)
+
+  return {
+    left: {
+      ...leftSlide,
+      ...(settings?.left?.[index] || {})
+    },
+    right: {
+      ...rightSlide,
+      ...(settings?.right?.[index] || {})
+    }
+  }
+}
+
 function setAspectRatio(preset: AspectPreset) {
+  storeCurrentAspectSettings()
   aspectWidth.value = preset.width
   aspectHeight.value = preset.height
   exportWidth.value = preset.exportWidth
   exportHeight.value = preset.exportHeight
+  applyAspectSettings(getAspectKey(preset.width, preset.height))
+}
+
+function normalizeAspectPreset(value: unknown): AspectPreset | null {
+  if (!value || typeof value !== 'object') return null
+  const preset = value as Partial<AspectPreset>
+
+  if (
+    typeof preset.width !== 'number'
+    || typeof preset.height !== 'number'
+    || typeof preset.exportWidth !== 'number'
+    || typeof preset.exportHeight !== 'number'
+  ) {
+    return null
+  }
+
+  const exportPresetWidth = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(preset.exportWidth)))
+  const exportPresetHeight = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(preset.exportHeight)))
+  const width = Math.max(1, Math.round(preset.width))
+  const height = Math.max(1, Math.round(preset.height))
+  const label = typeof preset.label === 'string' && preset.label.trim()
+    ? preset.label.trim()
+    : `${exportPresetWidth}:${exportPresetHeight}`
+
+  return {
+    label,
+    width,
+    height,
+    exportWidth: exportPresetWidth,
+    exportHeight: exportPresetHeight,
+    pack: typeof preset.pack === 'string' ? preset.pack : undefined,
+    custom: Boolean(preset.custom)
+  }
+}
+
+function normalizeCustomAspectPresets(value: unknown): AspectPreset[] {
+  if (!Array.isArray(value)) return []
+
+  const seen = new Set(aspectPresets.map(preset => preset.label))
+  const presets: AspectPreset[] = []
+
+  for (const item of value) {
+    const preset = normalizeAspectPreset(item)
+    if (!preset || seen.has(preset.label)) continue
+
+    seen.add(preset.label)
+    presets.push({ ...preset, custom: true })
+  }
+
+  return presets
+}
+
+function normalizeCustomAspectPacks(value: unknown): AspectPack[] {
+  if (!Array.isArray(value)) return []
+
+  const seen = new Set(aspectPacks.map(pack => pack.id))
+  const packs: AspectPack[] = []
+
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const pack = item as Partial<AspectPack>
+    if (typeof pack.id !== 'string' || typeof pack.label !== 'string') continue
+    const id = pack.id.trim().replace(/[^\w-]+/g, '-')
+    const label = pack.label.trim()
+    if (!id || !label || seen.has(id)) continue
+
+    seen.add(id)
+    packs.push({ id, label, editable: true })
+  }
+
+  return packs
+}
+
+function addCustomAspectPreset(width: number, height: number, pack?: string) {
+  const exportPresetWidth = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(width || 320)))
+  const exportPresetHeight = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(height || 180)))
+  const label = `${exportPresetWidth}:${exportPresetHeight}`
+
+  const preset: AspectPreset = {
+    label,
+    width: exportPresetWidth,
+    height: exportPresetHeight,
+    exportWidth: exportPresetWidth,
+    exportHeight: exportPresetHeight,
+    pack,
+    custom: true
+  }
+
+  const existingIndex = customAspectPresets.value.findIndex(item => item.label === label)
+  if (existingIndex >= 0) {
+    customAspectPresets.value.splice(existingIndex, 1, preset)
+  } else if (!aspectPresets.some(item => item.label === label)) {
+    customAspectPresets.value.push(preset)
+  }
+
+  setAspectRatio(preset)
+}
+
+function addCustomAspectPack() {
+  const existingLabels = new Set(allAspectPacks.value.map(pack => pack.label))
+  let index = 1
+  let label = `Group ${index}`
+  while (existingLabels.has(label)) {
+    index += 1
+    label = `Group ${index}`
+  }
+
+  customAspectPacks.value.push({
+    id: `custom-${Date.now()}-${index}`,
+    label,
+    editable: true
+  })
+}
+
+function renameCustomAspectPack(id: string, label: string) {
+  const pack = customAspectPacks.value.find(item => item.id === id)
+  if (!pack) return
+
+  pack.label = label
+}
+
+function removeCustomAspectPack(id: string) {
+  const index = customAspectPacks.value.findIndex(pack => pack.id === id)
+  if (index < 0) return
+
+  customAspectPacks.value.splice(index, 1)
+  const fallbackPack = customAspectPacks.value.find(pack => pack.id === 'custom')
+  if (fallbackPack) {
+    for (const preset of customAspectPresets.value) {
+      if (preset.pack === id) preset.pack = fallbackPack.id
+    }
+  } else {
+    customAspectPresets.value = customAspectPresets.value.filter(preset => preset.pack !== id)
+  }
+}
+
+function removeCustomAspectPreset(label: string) {
+  const index = customAspectPresets.value.findIndex(preset => preset.label === label)
+  if (index >= 0) customAspectPresets.value.splice(index, 1)
 }
 
 function normalizeAspectRatio() {
-  exportWidth.value = Math.max(320, Math.min(3840, Math.round(exportWidth.value || 320)))
-  exportHeight.value = Math.max(180, Math.min(3840, Math.round(exportHeight.value || 180)))
+  storeCurrentAspectSettings()
+  exportWidth.value = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(exportWidth.value || 320)))
+  exportHeight.value = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(exportHeight.value || 180)))
   aspectWidth.value = exportWidth.value
   aspectHeight.value = exportHeight.value
+  applyAspectSettings(getAspectKey(exportWidth.value, exportHeight.value))
 }
 
 function updateExportWidth() {
-  exportWidth.value = Math.max(320, Math.min(3840, Math.round(exportWidth.value || 320)))
+  exportWidth.value = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(exportWidth.value || 320)))
   exportHeight.value = Math.max(
-    180,
-    Math.min(3840, Math.round(exportWidth.value * aspectHeight.value / aspectWidth.value))
+    minExportDimension,
+    Math.min(maxExportDimension, Math.round(exportWidth.value * aspectHeight.value / aspectWidth.value))
   )
 }
 
 function updateExportHeight() {
-  exportHeight.value = Math.max(180, Math.min(3840, Math.round(exportHeight.value || 180)))
+  exportHeight.value = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(exportHeight.value || 180)))
   exportWidth.value = Math.max(
-    320,
-    Math.min(3840, Math.round(exportHeight.value * aspectWidth.value / aspectHeight.value))
+    minExportDimension,
+    Math.min(maxExportDimension, Math.round(exportHeight.value * aspectWidth.value / aspectHeight.value))
   )
 }
 
 function createSlide(side: PanelSide, index: number): Slide {
   return {
     backgroundImage: '',
+    backgroundImageX: 50,
+    backgroundImageY: 50,
+    backgroundImageScale: 1,
     backgroundColor: (index + (side === 'right' ? 1 : 0)) % 2 === 0
       ? '#ff00ff'
       : '#7f30e3',
     backgroundPreset: 'solid',
     splitAngle: 90,
+    checkerCells: 6,
     heading: `${side === 'left' ? 'Left' : 'Right'} slide ${index + 1}`,
     headingSize: 100,
     subheading: '',
+    subheadingSize: 100,
     logo: '',
     logoWidth: 40,
     logoHeight: 52,
-    legalText: ''
+    legalText: '',
+    legalSize: 100,
+    legalOpacity: 72,
+    legalShadow: false,
+    legalShadowOpacity: 35
   }
 }
 
@@ -375,6 +929,55 @@ function updateSlideCount(value: number) {
   leavingIndex.value = null
   activeIndex.value = Math.min(activeIndex.value, nextCount - 1)
   selectedIndex.value = Math.min(selectedIndex.value, nextCount - 1)
+  restartAutoplay()
+}
+
+function insertSlideAt(insertIndex: number) {
+  if (slideCount.value >= 20) return
+
+  storeCurrentAspectSettings()
+
+  for (const side of panelSides) {
+    panelSlides.value[side].splice(insertIndex, 0, createSlide(side, insertIndex))
+  }
+
+  for (const settings of Object.values(aspectSlideSettings.value)) {
+    for (const side of panelSides) {
+      const fields = getAspectSlideFields(createSlide(side, insertIndex))
+      settings[side]?.splice(insertIndex, 0, fields)
+    }
+  }
+
+  requestedSlideCount.value = slideCount.value
+  clearTimeout(transitionTimer)
+  leavingIndex.value = null
+  activeIndex.value = insertIndex
+  selectedIndex.value = insertIndex
+  restartAutoplay()
+}
+
+function removeSelectedSlide() {
+  if (slideCount.value <= 1) return
+
+  storeCurrentAspectSettings()
+  const removeIndex = Math.min(selectedIndex.value, slideCount.value - 1)
+  const nextIndex = Math.min(removeIndex, slideCount.value - 2)
+
+  for (const side of panelSides) {
+    panelSlides.value[side].splice(removeIndex, 1)
+  }
+
+  for (const settings of Object.values(aspectSlideSettings.value)) {
+    for (const side of panelSides) {
+      settings[side]?.splice(removeIndex, 1)
+    }
+  }
+
+  requestedSlideCount.value = slideCount.value
+  clearTimeout(transitionTimer)
+  leavingIndex.value = null
+  activeIndex.value = nextIndex
+  selectedIndex.value = nextIndex
   restartAutoplay()
 }
 
@@ -504,6 +1107,11 @@ function handleAssetUpload(
   reader.addEventListener('load', () => {
     if (selectedSlide.value && typeof reader.result === 'string') {
       selectedSlide.value[field] = reader.result
+      if (field === 'backgroundImage') {
+        selectedSlide.value.backgroundImageX = 50
+        selectedSlide.value.backgroundImageY = 50
+        selectedSlide.value.backgroundImageScale = 1
+      }
     }
     restoreScroll()
   })
@@ -516,12 +1124,161 @@ function rememberControlsScroll() {
 }
 
 function clearAsset(field: 'backgroundImage' | 'logo') {
-  if (selectedSlide.value) selectedSlide.value[field] = ''
+  if (!selectedSlide.value) return
+  selectedSlide.value[field] = ''
+  if (field === 'backgroundImage') {
+    selectedSlide.value.backgroundImageX = 50
+    selectedSlide.value.backgroundImageY = 50
+    selectedSlide.value.backgroundImageScale = 1
+  }
 }
 
 function rotateSplitDirection() {
   if (!selectedSlide.value) return
   selectedSlide.value.splitAngle = (selectedSlide.value.splitAngle + 90) % 360
+}
+
+function applySelectedBackgroundToAspectRatios() {
+  const slide = selectedSlide.value
+  if (!slide) return
+
+  const backgroundFields: Pick<
+    AspectSlideFields,
+    'backgroundColor' | 'backgroundPreset' | 'splitAngle' | 'checkerCells'
+  > = {
+    backgroundColor: slide.backgroundColor,
+    backgroundPreset: normalizeBackgroundPreset(slide.backgroundPreset),
+    splitAngle: normalizeSplitAngle(slide.splitAngle),
+    checkerCells: normalizeCheckerCells(slide.checkerCells)
+  }
+
+  aspectSlideSettings.value[getAspectKey()] = captureAspectSlideSettings()
+
+  for (const settings of Object.values(aspectSlideSettings.value)) {
+    const fields = settings[selectedPanel.value]?.[selectedIndex.value]
+    if (fields) Object.assign(fields, backgroundFields)
+  }
+
+  saveSettings()
+}
+
+function applySelectedTextToAspectRatios() {
+  const slide = selectedSlide.value
+  if (!slide) return
+
+  const textFields: Pick<
+    AspectSlideFields,
+    | 'heading'
+    | 'headingSize'
+    | 'subheading'
+    | 'subheadingSize'
+    | 'legalText'
+    | 'legalSize'
+    | 'legalOpacity'
+    | 'legalShadow'
+    | 'legalShadowOpacity'
+  > = {
+    heading: slide.heading,
+    headingSize: slide.headingSize,
+    subheading: slide.subheading,
+    subheadingSize: slide.subheadingSize,
+    legalText: slide.legalText,
+    legalSize: slide.legalSize,
+    legalOpacity: slide.legalOpacity,
+    legalShadow: slide.legalShadow,
+    legalShadowOpacity: slide.legalShadowOpacity
+  }
+
+  aspectSlideSettings.value[getAspectKey()] = captureAspectSlideSettings()
+
+  const aspectKeys = new Set([
+    ...Object.keys(aspectSlideSettings.value),
+    ...quickAspectPresets.map(preset => getAspectKey(preset.width, preset.height)),
+    ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height))
+  ])
+
+  for (const key of aspectKeys) {
+    aspectSlideSettings.value[key] ||= captureAspectSlideSettings()
+    const fields = aspectSlideSettings.value[key]?.[selectedPanel.value]?.[selectedIndex.value]
+    if (fields) Object.assign(fields, textFields)
+  }
+
+  saveSettings()
+}
+
+function getBrandBackgroundStyle(slide: Slide, portrait = isPortrait.value): Record<string, string | number> {
+  if (slide.backgroundImage || slide.backgroundPreset === 'solid') {
+    return {
+      backgroundColor: slide.backgroundColor,
+      backgroundImage: 'none',
+      backgroundSize: 'auto'
+    }
+  }
+
+  if (slide.backgroundPreset === 'checker') {
+    const checkerCells = normalizeCheckerCells(slide.checkerCells)
+    const checkerAngle = normalizeSplitAngle(slide.splitAngle)
+    const checkerImage =
+      `repeating-conic-gradient(from ${checkerAngle}deg, #ff00ff 0 25%, #7f30e3 0 50%, #ff00ff 0 75%, #7f30e3 0 100%)`
+    const checkerSize = `${200 / checkerCells}% ${200 / checkerCells}%`
+
+    return {
+      backgroundColor: slide.backgroundColor,
+      backgroundImage: checkerImage,
+      backgroundSize: checkerSize,
+      '--checker-cells': checkerCells,
+      '--checker-angle': `${checkerAngle}deg`,
+      '--checker-image': checkerImage,
+      '--checker-size': checkerSize
+    }
+  }
+
+  return {
+    backgroundColor: slide.backgroundColor,
+    backgroundImage:
+      `linear-gradient(${(normalizeSplitAngle(slide.splitAngle) + (portrait ? 270 : 0)) % 360}deg, #ff00ff 0 50%, #7f30e3 50% 100%)`,
+    backgroundSize: 'cover'
+  }
+}
+
+function getAspectPreviewBackgroundStyle(slide: Slide, preset: AspectPreset): Record<string, string | number> {
+  return getBrandBackgroundStyle(slide, preset.height >= preset.width)
+}
+
+function hasWhiteBackground(slide: Slide) {
+  return (
+    !slide.backgroundImage
+    && slide.backgroundPreset === 'solid'
+    && slide.backgroundColor.toLowerCase() === '#ffffff'
+  )
+}
+
+function hasPurpleBackground(slide: Slide) {
+  return (
+    !slide.backgroundImage
+    && slide.backgroundPreset === 'solid'
+    && slide.backgroundColor.toLowerCase() === '#7f30e3'
+  )
+}
+
+function isLogoImage(logo: string) {
+  return logo.startsWith('data:') || logo === defaultLogo
+}
+
+function getLogoSource(slide: Slide) {
+  if (slide.logo === defaultLogo && hasWhiteBackground(slide)) {
+    return invertedDefaultLogo
+  }
+
+  if (slide.logo === defaultLogo && hasPurpleBackground(slide)) {
+    return purpleLetterDefaultLogo
+  }
+
+  return slide.logo
+}
+
+function useDefaultLogo() {
+  if (selectedSlide.value) selectedSlide.value.logo = defaultLogo
 }
 
 function normalizeKeyValue(value: number | number[]) {
@@ -541,11 +1298,14 @@ function sampleBaseKeyframes(
   frame: number
 ) {
   if (!keyframes.length) return [0]
-  if (frame <= keyframes[0].t) return getKeyStartValue(keyframes[0])
+  const first = keyframes[0]
+  if (!first) return [0]
+  if (frame <= first.t) return getKeyStartValue(first)
 
   for (let index = 0; index < keyframes.length - 1; index += 1) {
     const current = keyframes[index]
     const next = keyframes[index + 1]
+    if (!current || !next) continue
     if (frame >= current.t && frame <= next.t) {
       const span = Math.max(0.0001, next.t - current.t)
       return interpolateValues(
@@ -556,7 +1316,7 @@ function sampleBaseKeyframes(
     }
   }
 
-  return getKeyStartValue(keyframes[keyframes.length - 1])
+  return getKeyStartValue(keyframes[keyframes.length - 1] ?? first)
 }
 
 function previousKeyIndex(
@@ -565,7 +1325,8 @@ function previousKeyIndex(
 ) {
   let index = -1
   for (let keyIndex = 0; keyIndex < keyframes.length; keyIndex += 1) {
-    if (keyframes[keyIndex].t <= frame) index = keyIndex
+    const keyframe = keyframes[keyIndex]
+    if (keyframe && keyframe.t <= frame) index = keyIndex
     else break
   }
   return index
@@ -576,10 +1337,14 @@ function velocityBeforeKey(
   keyIndex: number,
   fps: number
 ) {
-  if (keyIndex <= 0) return getKeyStartValue(keyframes[Math.max(0, keyIndex)]).map(() => 0)
+  if (keyIndex <= 0) {
+    const keyframe = keyframes[Math.max(0, keyIndex)] ?? keyframes[0] ?? { s: [0] }
+    return getKeyStartValue(keyframe).map(() => 0)
+  }
 
   const previous = keyframes[keyIndex - 1]
   const current = keyframes[keyIndex]
+  if (!previous || !current) return [0]
   const durationSeconds = Math.max(0.0001, (current.t - previous.t) / fps)
   const previousValue = getKeyStartValue(previous)
   const currentValue = getKeyStartValue(current)
@@ -867,10 +1632,15 @@ function cubicBezierAt(progress: number) {
 function loadRenderImage(source: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image()
+    image.crossOrigin = 'anonymous'
     image.addEventListener('load', () => resolve(image))
     image.addEventListener('error', reject)
     image.src = source
   })
+}
+
+function isVideoSource(source: string) {
+  return source.startsWith('data:video/')
 }
 
 function copyComputedStyles(source: Element, target: Element) {
@@ -991,15 +1761,52 @@ function drawCoverImage(
   width: number,
   height: number
 ) {
-  const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight)
-  const renderedWidth = image.naturalWidth * scale
-  const renderedHeight = image.naturalHeight * scale
+  drawPlacedImage(context, image, width, height, 50, 50, 1)
+}
+
+function drawPlacedMedia(
+  context: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  naturalWidth: number,
+  naturalHeight: number,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  scaleMultiplier: number
+) {
+  const scale = Math.max(width / naturalWidth, height / naturalHeight)
+    * Math.max(0.2, Math.min(6, scaleMultiplier))
+  const renderedWidth = naturalWidth * scale
+  const renderedHeight = naturalHeight * scale
   context.drawImage(
-    image,
-    (width - renderedWidth) / 2,
-    (height - renderedHeight) / 2,
+    source,
+    width * normalizeBackgroundImageX(x) / 100 - renderedWidth / 2,
+    height * normalizeBackgroundImageY(y) / 100 - renderedHeight / 2,
     renderedWidth,
     renderedHeight
+  )
+}
+
+function drawPlacedImage(
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  scaleMultiplier: number
+) {
+  drawPlacedMedia(
+    context,
+    image,
+    image.naturalWidth,
+    image.naturalHeight,
+    width,
+    height,
+    x,
+    y,
+    scaleMultiplier
   )
 }
 
@@ -1012,6 +1819,30 @@ function drawSafeSlideBackground(
 ) {
   context.fillStyle = slide.backgroundColor
   context.fillRect(0, 0, width, height)
+
+  if (slide.backgroundPreset === 'checker' && !slide.backgroundImage) {
+    const checkerCells = normalizeCheckerCells(slide.checkerCells)
+    const tileWidth = width / checkerCells
+    const tileHeight = height / checkerCells
+    const radians = slide.splitAngle * Math.PI / 180
+    const coverSize = Math.hypot(width, height)
+
+    context.save()
+    context.translate(width / 2, height / 2)
+    context.rotate(radians)
+    context.translate(-coverSize / 2, -coverSize / 2)
+
+    for (let y = 0; y < coverSize; y += tileHeight) {
+      for (let x = 0; x < coverSize; x += tileWidth) {
+        context.fillStyle = (Math.floor(x / tileWidth) + Math.floor(y / tileHeight)) % 2 === 0
+          ? '#ff00ff'
+          : '#7f30e3'
+        context.fillRect(x, y, tileWidth, tileHeight)
+      }
+    }
+
+    context.restore()
+  }
 
   if (slide.backgroundPreset === 'split' && !slide.backgroundImage) {
     const radians = slide.splitAngle * Math.PI / 180
@@ -1033,7 +1864,42 @@ function drawSafeSlideBackground(
   }
 
   const backgroundImage = images.get(slide.backgroundImage)
-  if (backgroundImage) drawCoverImage(context, backgroundImage, width, height)
+  if (backgroundImage) {
+    drawPlacedImage(
+      context,
+      backgroundImage,
+      width,
+      height,
+      normalizeBackgroundImageX(slide.backgroundImageX),
+      normalizeBackgroundImageY(slide.backgroundImageY),
+      normalizeBackgroundImageScale(slide.backgroundImageScale)
+    )
+  }
+}
+
+function drawVideoBackgroundFromDom(
+  context: CanvasRenderingContext2D,
+  element: HTMLElement,
+  slide: Slide,
+  width: number,
+  height: number
+) {
+  const video = element.querySelector<HTMLVideoElement>('.draggable-background video')
+  if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth || !video.videoHeight) {
+    return
+  }
+
+  drawPlacedMedia(
+    context,
+    video,
+    video.videoWidth,
+    video.videoHeight,
+    width,
+    height,
+    normalizeBackgroundImageX(slide.backgroundImageX),
+    normalizeBackgroundImageY(slide.backgroundImageY),
+    normalizeBackgroundImageScale(slide.backgroundImageScale)
+  )
 }
 
 function renderSlideSnapshot(
@@ -1081,10 +1947,13 @@ function renderSlideSnapshot(
     const scaleX = width / rootRect.width
     const scaleY = height / rootRect.height
     drawSafeSlideBackground(context, slide, width, height, images)
+    if (isVideoSource(slide.backgroundImage)) {
+      drawVideoBackgroundFromDom(context, element, slide, width, height)
+    }
 
     const logoImageElement = clone.querySelector<HTMLImageElement>('.slide-logo img')
     if (logoImageElement) {
-      const image = images.get(slide.logo)
+      const image = images.get(getLogoSource(slide)) || images.get(slide.logo)
       if (image) {
         const rect = logoImageElement.getBoundingClientRect()
         context.drawImage(
@@ -1117,19 +1986,24 @@ function createSlideSnapshots(
   const snapshots = new Map<string, HTMLCanvasElement>()
   const panelWidth = isPortrait.value ? width : width / 2
   const panelHeight = isPortrait.value ? height / 2 : height
+  const stage = document.querySelector<HTMLElement>('.slot-stage--main')
+  if (!stage) throw new Error('Unable to find the preview stage.')
 
   for (const side of panelSides) {
-    const panel = document.querySelector<HTMLElement>(`.slot-panel--${side}`)
+    const panel = stage.querySelector<HTMLElement>(`.slot-panel--${side}`)
     if (!panel) throw new Error(`Unable to find the ${side} preview panel.`)
 
     const elements = panel.querySelectorAll<HTMLElement>('.slot-slide')
 
     for (const [index, element] of [...elements].entries()) {
+      const slide = panelSlides.value[side][index]
+      if (!slide) continue
+
       snapshots.set(
         `${side}-${index}`,
         renderSlideSnapshot(
           element,
-          panelSlides.value[side][index],
+          slide,
           panelWidth,
           panelHeight,
           images
@@ -1144,7 +2018,7 @@ function createSlideSnapshots(
 function drawScaledPanelSlide(
   context: CanvasRenderingContext2D,
   slide: CanvasImageSource,
-  side: PanelSide,
+  visualIndex: number,
   scale: number,
   origin: 'start' | 'end',
   width: number,
@@ -1154,8 +2028,8 @@ function drawScaledPanelSlide(
   const portrait = isPortrait.value
   const panelWidth = portrait ? width : width / 2
   const panelHeight = portrait ? height / 2 : height
-  const x = portrait ? 0 : side === 'left' ? 0 : panelWidth
-  const y = portrait ? side === 'left' ? 0 : panelHeight : 0
+  const x = portrait ? 0 : visualIndex === 0 ? 0 : panelWidth
+  const y = portrait ? visualIndex === 0 ? 0 : panelHeight : 0
   const originX = origin === 'start' ? x : x + panelWidth
   const originY = origin === 'start' ? y : y + panelHeight
 
@@ -1215,6 +2089,10 @@ function concatBytes(chunks: Uint8Array[]) {
   return output
 }
 
+function toBlobPart(data: Uint8Array): ArrayBuffer {
+  return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+}
+
 function createZip(files: Array<{ name: string, data: Uint8Array }>) {
   const encoder = new TextEncoder()
   const localChunks: Uint8Array[] = []
@@ -1263,18 +2141,23 @@ function createZip(files: Array<{ name: string, data: Uint8Array }>) {
   writeUint32(endView, 12, centralData.length)
   writeUint32(endView, 16, localOffset)
 
-  return new Blob([...localChunks, centralData, end], { type: 'application/zip' })
+  return new Blob([...localChunks, centralData, end].map(toBlobPart), { type: 'application/zip' })
 }
 
 async function downloadPngZip(
   files: Array<{ name: string, data: Uint8Array }>,
-  prefix: string
+  prefix: string,
+  filename = `${prefix}-png-sequence.zip`
 ) {
   const zip = createZip(files)
-  const url = URL.createObjectURL(zip)
+  downloadBlob(zip, filename)
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `${prefix}-png-sequence.zip`
+  link.download = filename
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
@@ -1290,7 +2173,7 @@ async function downloadMp4(
   for (const file of files) {
     formData.append(
       'frames',
-      new Blob([file.data], { type: 'image/png' }),
+      new Blob([toBlobPart(file.data)], { type: 'image/png' }),
       file.name
     )
   }
@@ -1314,12 +2197,389 @@ async function downloadMp4(
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
+async function loadRenderImages() {
+  const sources = new Set<string>()
+  for (const side of panelSides) {
+    for (const slide of panelSlides.value[side]) {
+      if (slide.backgroundImage && !isVideoSource(slide.backgroundImage)) sources.add(slide.backgroundImage)
+      const logoSource = getLogoSource(slide)
+      if (isLogoImage(logoSource)) sources.add(logoSource)
+    }
+  }
+
+  const images = new Map<string, HTMLImageElement>()
+  await Promise.all([...sources].map(async source => {
+    images.set(source, await loadRenderImage(source))
+  }))
+  return images
+}
+
+function getFrameState(time: number) {
+  const firstPause = Number.isFinite(firstPauseSeconds.value)
+    ? firstPauseSeconds.value
+    : pauseSeconds.value
+  const segments = Array.from(
+    { length: slideCount.value },
+    (_, index) => {
+      const pause = index === 0 ? firstPause : pauseSeconds.value
+      const hasTransition = loopSlides.value || index < slideCount.value - 1
+      return pause + (hasTransition ? transitionSeconds.value : 0)
+    }
+  )
+
+  let currentIndex = 0
+  let segmentStart = 0
+  for (let index = 0; index < slideCount.value; index += 1) {
+    const segmentEnd = segmentStart + (segments[index] ?? 0)
+    if (time < segmentEnd || index === slideCount.value - 1) {
+      currentIndex = index
+      break
+    }
+    segmentStart = segmentEnd
+  }
+
+  const localTime = time - segmentStart
+  const currentPause = currentIndex === 0 ? firstPause : pauseSeconds.value
+  const hasTransition = loopSlides.value || currentIndex < slideCount.value - 1
+  const nextIndex = hasTransition ? (currentIndex + 1) % slideCount.value : currentIndex
+  const transition = hasTransition && localTime >= currentPause && transitionSeconds.value > 0
+  const progress = transition
+    ? cubicBezierAt(Math.min(1, (localTime - currentPause) / transitionSeconds.value))
+    : 0
+
+  return { currentIndex, nextIndex, transition, progress }
+}
+
+function drawPanelFrame(
+  context: CanvasRenderingContext2D,
+  snapshots: Map<string, HTMLCanvasElement>,
+  side: PanelSide,
+  sideIndex: number,
+  state: ReturnType<typeof getFrameState>,
+  width: number,
+  height: number
+) {
+  const visualIndex = activePanelSwap.value
+    ? 1 - sideIndex
+    : sideIndex
+  const startOrigin = visualIndex === 0 ? 'start' : 'end'
+  const endOrigin = visualIndex === 0 ? 'end' : 'start'
+  const effectiveStart = reverseDirections.value ? endOrigin : startOrigin
+  const effectiveEnd = reverseDirections.value ? startOrigin : endOrigin
+  const current = snapshots.get(`${side}-${state.currentIndex}`)
+  const next = snapshots.get(`${side}-${state.nextIndex}`)
+
+  if (!state.transition) {
+    if (current) drawScaledPanelSlide(context, current, visualIndex, 1, effectiveStart, width, height)
+    return
+  }
+
+  if (next) {
+    drawScaledPanelSlide(context, next, visualIndex, state.progress, effectiveStart, width, height)
+  }
+  if (current) {
+    drawScaledPanelSlide(context, current, visualIndex, 1 - state.progress, effectiveEnd, width, height)
+  }
+}
+
+async function renderPngSequenceInBrowser(
+  width: number,
+  height: number,
+  fps: number,
+  frameCount: number,
+  prefix: string
+) {
+  exportStatus.value = 'Loading render assets'
+  await document.fonts.ready
+  const images = await loadRenderImages()
+  const snapshots = createSlideSnapshots(width, height, images)
+  const digits = String(frameCount).length
+  const files: Array<{ name: string, data: Uint8Array }> = []
+
+  exportStatus.value = `Rendering ${frameCount} PNG frames`
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('Canvas rendering is not supported.')
+
+    const state = getFrameState(frame / fps)
+    panelSides.forEach((side, sideIndex) => {
+      drawPanelFrame(context, snapshots, side, sideIndex, state, width, height)
+    })
+
+    const blob = await canvasToPng(canvas)
+    files.push({
+      name: `frame-${String(frame + 1).padStart(digits, '0')}.png`,
+      data: new Uint8Array(await blob.arrayBuffer())
+    })
+    exportProgress.value = 0.05 + (frame + 1) / frameCount * 0.85
+
+    if (frame % 4 === 3) {
+      await new Promise(resolve => requestAnimationFrame(resolve))
+    }
+  }
+
+  exportStatus.value = 'Packaging PNG files'
+  exportProgress.value = 0.95
+  await downloadPngZip(files, prefix)
+}
+
+async function renderCurrentSlidePng(
+  width: number,
+  height: number,
+  images: Map<string, HTMLImageElement>
+) {
+  const snapshots = createSlideSnapshots(width, height, images)
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('Canvas rendering is not supported.')
+
+  const state = {
+    currentIndex: activeIndex.value,
+    nextIndex: activeIndex.value,
+    transition: false,
+    progress: 0
+  }
+  panelSides.forEach((side, sideIndex) => {
+    drawPanelFrame(context, snapshots, side, sideIndex, state, width, height)
+  })
+
+  const blob = await canvasToPng(canvas)
+  return new Uint8Array(await blob.arrayBuffer())
+}
+
+function imageToDataUrl(source: string) {
+  return new Promise<string>((resolve, reject) => {
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    image.addEventListener('load', () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = image.naturalWidth || 1
+      canvas.height = image.naturalHeight || 1
+      const context = canvas.getContext('2d')
+      if (!context) {
+        reject(new Error('Canvas rendering is not supported.'))
+        return
+      }
+
+      context.drawImage(image, 0, 0)
+      resolve(canvas.toDataURL('image/png'))
+    })
+    image.addEventListener('error', reject)
+    image.src = source
+  })
+}
+
+async function inlineCloneImages(clone: HTMLElement) {
+  const images = [...clone.querySelectorAll<HTMLImageElement>('img')]
+  await Promise.all(images.map(async image => {
+    if (!image.src || image.src.startsWith('data:')) return
+
+    try {
+      image.src = await imageToDataUrl(image.src)
+    } catch {
+      // Keep same-origin asset URLs if canvas inlining is unavailable.
+    }
+  }))
+}
+
+async function captureStageScreenshotPng(width: number, height: number) {
+  const stage = document.querySelector<HTMLElement>('.slot-stage--main')
+  if (!stage) throw new Error('Unable to find the preview stage.')
+
+  const stageRect = stage.getBoundingClientRect()
+  const clone = stage.cloneNode(true) as HTMLElement
+  copyComputedStyles(stage, clone)
+  await inlineCloneImages(clone)
+
+  clone.style.position = 'relative'
+  clone.style.inset = 'auto'
+  clone.style.width = `${stageRect.width}px`
+  clone.style.height = `${stageRect.height}px`
+  clone.style.margin = '0'
+  clone.style.transform = 'none'
+  clone.style.transformOrigin = 'top left'
+  clone.style.overflow = 'hidden'
+
+  const wrapper = document.createElement('div')
+  wrapper.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml')
+  wrapper.style.width = `${stageRect.width}px`
+  wrapper.style.height = `${stageRect.height}px`
+  wrapper.style.overflow = 'hidden'
+  wrapper.style.background = '#fff'
+  wrapper.append(clone)
+
+  const serialized = new XMLSerializer().serializeToString(wrapper)
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${stageRect.width}" height="${stageRect.height}" viewBox="0 0 ${stageRect.width} ${stageRect.height}">
+      <foreignObject width="100%" height="100%">${serialized}</foreignObject>
+    </svg>
+  `
+  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }))
+
+  try {
+    const image = await loadRenderImage(url)
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('Canvas rendering is not supported.')
+
+    context.drawImage(image, 0, 0, width, height)
+    const blob = await canvasToPng(canvas)
+    return new Uint8Array(await blob.arrayBuffer())
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+function sanitizeRenderName(value: string) {
+  return value.trim().replace(/[^\p{L}\p{N}_-]+/gu, '-') || 'aspects'
+}
+
+function getRenderDateStamp(date = new Date()) {
+  const day = String(date.getDate()).padStart(2, '0')
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const year = date.getFullYear()
+  return `${day}${month}${year}`
+}
+
+function shouldRenderAspectGroupOnServer(error: unknown) {
+  if (!(error instanceof Error)) return true
+  return /taint|toblob|foreignobject|canvas/i.test(error.message)
+}
+
+async function renderAspectGroupImagesInBrowser(presets: AspectPreset[], groupLabel: string) {
+  await document.fonts.ready
+  const groupName = sanitizeRenderName(groupLabel)
+  const files: Array<{ name: string, data: Uint8Array }> = []
+
+  for (const [index, preset] of presets.entries()) {
+    exportStatus.value = `Rendering ${preset.label}`
+    setAspectRatio(preset)
+    await nextTick()
+    await new Promise(resolve => requestAnimationFrame(resolve))
+
+    files.push({
+      name: `${groupName}_${preset.exportWidth}x${preset.exportHeight}.png`,
+      data: await captureStageScreenshotPng(preset.exportWidth, preset.exportHeight)
+    })
+    exportProgress.value = (index + 1) / presets.length * 0.9
+  }
+
+  exportStatus.value = 'Packaging PNG files'
+  exportProgress.value = 0.95
+  await downloadPngZip(files, groupName, `${groupName}_${getRenderDateStamp()}.zip`)
+}
+
+async function renderAspectGroupImagesOnServer(
+  presets: AspectPreset[],
+  groupLabel: string,
+  renderScale = 1
+) {
+  const groupName = sanitizeRenderName(groupLabel)
+  const settings: PersistedSettings = {
+    ...getCurrentSettings(),
+    selectedIndex: activeIndex.value,
+    exportFormat: 'png'
+  }
+  const formData = new FormData()
+  formData.set(
+    'settings',
+    new Blob([JSON.stringify(settings)], { type: 'application/json' }),
+    'settings.json'
+  )
+  formData.set(
+    'presets',
+    new Blob([JSON.stringify(presets)], { type: 'application/json' }),
+    'presets.json'
+  )
+  formData.set('groupLabel', groupLabel)
+  formData.set('activeIndex', String(activeIndex.value))
+  formData.set('renderScale', String(renderScale))
+
+  exportStatus.value = renderScale > 1
+    ? `Rendering ${renderScale}x screenshots on server`
+    : 'Rendering screenshots on server'
+  const estimatedRenderSeconds = Math.max(4, presets.length * (renderScale > 1 ? 0.8 : 0.45))
+  const progressStartedAt = Date.now()
+  clearInterval(exportProgressTimer)
+  exportProgressTimer = setInterval(() => {
+    const elapsed = (Date.now() - progressStartedAt) / 1000
+    const estimated = Math.min(0.9, elapsed / estimatedRenderSeconds * 0.9)
+    exportProgress.value = Math.max(exportProgress.value, estimated)
+  }, 250)
+
+  const response = await fetch('/api/render-aspect-group', {
+    method: 'POST',
+    body: formData
+  })
+  clearInterval(exportProgressTimer)
+  exportProgress.value = 0.95
+
+  if (!response.ok) {
+    const message = await response.text()
+    throw new Error(message || 'Server aspect render failed.')
+  }
+
+  const zip = await response.blob()
+  downloadBlob(zip, `${groupName}_${getRenderDateStamp()}.zip`)
+}
+
+async function renderAspectGroupImages(
+  presets: AspectPreset[],
+  groupLabel: string,
+  renderScale = 1
+) {
+  if (isExporting.value || presets.length === 0) return
+
+  const originalAspect = {
+    label: activeAspectLabel.value,
+    width: aspectWidth.value,
+    height: aspectHeight.value,
+    exportWidth: exportWidth.value,
+    exportHeight: exportHeight.value
+  }
+  const wasPlaying = isPlaying.value
+
+  isExporting.value = true
+  isRenderingAspectGroup.value = true
+  exportError.value = ''
+  exportProgress.value = 0
+  exportStatus.value = 'Preparing aspect renders'
+  isPlaying.value = false
+  restartAutoplay()
+
+  try {
+    storeCurrentAspectSettings()
+    await renderAspectGroupImagesOnServer(presets, groupLabel, renderScale)
+    exportProgress.value = 1
+    exportStatus.value = 'Complete'
+  } catch (error) {
+    exportError.value = error instanceof Error
+      ? error.message
+      : 'Aspect group render failed.'
+  } finally {
+    clearInterval(exportProgressTimer)
+    setAspectRatio(originalAspect)
+    await nextTick()
+    isPlaying.value = wasPlaying
+    restartAutoplay()
+    isRenderingAspectGroup.value = false
+    isExporting.value = false
+  }
+}
+
 async function renderSequence() {
   if (isExporting.value) return
 
   exportError.value = ''
-  const width = Math.max(320, Math.min(3840, Math.round(exportWidth.value)))
-  const height = Math.max(180, Math.min(3840, Math.round(exportHeight.value)))
+  const width = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(exportWidth.value)))
+  const height = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(exportHeight.value)))
   const fps = Math.max(1, Math.min(60, Math.round(exportFps.value)))
   exportWidth.value = width
   exportHeight.value = height
@@ -1339,11 +2599,21 @@ async function renderSequence() {
   restartAutoplay()
 
   try {
+    storeCurrentAspectSettings()
     const prefix = exportPrefix.value.trim().replace(/[^\w-]+/g, '-') || 'frame'
-    const previewStage = document.querySelector<HTMLElement>('.slot-stage')
+    if (exportFormat.value === 'png' && !showPackshotOnFinalSlide.value) {
+      await renderPngSequenceInBrowser(width, height, fps, frameCount, prefix)
+      exportProgress.value = 1
+      exportStatus.value = 'Complete'
+      return
+    }
+
+    const previewStage = document.querySelector<HTMLElement>('.slot-stage--main')
     const previewRect = previewStage?.getBoundingClientRect()
     const settings: PersistedSettings = {
       panelSlides: panelSlides.value,
+      aspectSlideSettings: aspectSlideSettings.value,
+      aspectPackshotWidths: aspectPackshotWidths.value,
       selectedPanel: selectedPanel.value,
       selectedIndex: selectedIndex.value,
       requestedSlideCount: requestedSlideCount.value,
@@ -1356,10 +2626,15 @@ async function renderSequence() {
       exportFps: fps,
       exportPrefix: prefix,
       exportFormat: exportFormat.value,
+      mp4Chroma: mp4Chroma.value,
       aspectWidth: aspectWidth.value,
       aspectHeight: aspectHeight.value,
       reverseDirections: reverseDirections.value,
+      narrowHorizontalAnimation: narrowHorizontalAnimation.value,
+      textLineTransition: textLineTransition.value,
       swapVerticalPanels: swapVerticalPanels.value,
+      swapHorizontalPanels: swapHorizontalPanels.value,
+      swapUltraNarrowPanels: swapUltraNarrowPanels.value,
       loopSlides: loopSlides.value,
       showPackshotOnFinalSlide: showPackshotOnFinalSlide.value,
       packshotWidth: packshotWidth.value,
@@ -1398,7 +2673,7 @@ async function renderSequence() {
     clearInterval(exportProgressTimer)
     exportProgress.value = 0.95
     exportStatus.value = exportFormat.value === 'mp4'
-      ? 'Finalizing MP4'
+      ? mp4Chroma.value === 'high' ? 'Finalizing MOV' : 'Finalizing MP4'
       : 'Packaging PNG files'
 
     if (!response.ok) {
@@ -1411,7 +2686,7 @@ async function renderSequence() {
     const link = document.createElement('a')
     link.href = url
     link.download = exportFormat.value === 'mp4'
-      ? `${prefix}.mp4`
+      ? `${prefix}.${mp4Chroma.value === 'high' ? 'mov' : 'mp4'}`
       : `${prefix}-png-sequence.zip`
     link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
@@ -1433,27 +2708,52 @@ function isValidSlide(value: unknown): value is Slide {
 
   return (
     typeof slide.backgroundImage === 'string'
+    && (slide.backgroundImageX === undefined || typeof slide.backgroundImageX === 'number')
+    && (slide.backgroundImageY === undefined || typeof slide.backgroundImageY === 'number')
+    && (slide.backgroundImageScale === undefined || typeof slide.backgroundImageScale === 'number')
     && typeof slide.backgroundColor === 'string'
-    && (slide.backgroundPreset === undefined || slide.backgroundPreset === 'solid' || slide.backgroundPreset === 'split')
+    && (
+      slide.backgroundPreset === undefined
+      || slide.backgroundPreset === 'solid'
+      || slide.backgroundPreset === 'split'
+      || slide.backgroundPreset === 'checker'
+    )
     && (slide.splitAngle === undefined || typeof slide.splitAngle === 'number')
+    && (slide.checkerCells === undefined || typeof slide.checkerCells === 'number')
     && typeof slide.heading === 'string'
     && (slide.headingSize === undefined || typeof slide.headingSize === 'number')
     && typeof slide.subheading === 'string'
+    && (slide.subheadingSize === undefined || typeof slide.subheadingSize === 'number')
     && typeof slide.logo === 'string'
     && (slide.logoWidth === undefined || typeof slide.logoWidth === 'number')
     && (slide.logoHeight === undefined || typeof slide.logoHeight === 'number')
     && typeof slide.legalText === 'string'
+    && (slide.legalSize === undefined || typeof slide.legalSize === 'number')
+    && (slide.legalOpacity === undefined || typeof slide.legalOpacity === 'number')
+    && (slide.legalShadow === undefined || typeof slide.legalShadow === 'boolean')
+    && (
+      slide.legalShadowOpacity === undefined
+      || typeof slide.legalShadowOpacity === 'number'
+    )
   )
 }
 
 function normalizeSlide(slide: Slide): Slide {
   return {
     ...slide,
-    backgroundPreset: slide.backgroundPreset === 'split' ? 'split' : 'solid',
-    splitAngle: typeof slide.splitAngle === 'number' ? slide.splitAngle : 90,
+    backgroundImageX: normalizeBackgroundImageX(slide.backgroundImageX),
+    backgroundImageY: normalizeBackgroundImageY(slide.backgroundImageY),
+    backgroundImageScale: normalizeBackgroundImageScale(slide.backgroundImageScale),
+    backgroundPreset: normalizeBackgroundPreset(slide.backgroundPreset),
+    splitAngle: normalizeSplitAngle(slide.splitAngle),
+    checkerCells: normalizeCheckerCells(slide.checkerCells),
     headingSize:
       typeof slide.headingSize === 'number'
         ? Math.max(25, Math.min(200, slide.headingSize))
+        : 100,
+    subheadingSize:
+      typeof slide.subheadingSize === 'number'
+        ? Math.max(25, Math.min(200, slide.subheadingSize))
         : 100,
     logoWidth:
       typeof slide.logoWidth === 'number'
@@ -1461,145 +2761,404 @@ function normalizeSlide(slide: Slide): Slide {
           ? Math.max(1, Math.min(100, slide.logoWidth / 4.5))
           : Math.max(1, Math.min(100, slide.logoWidth))
         : 40,
-    logoHeight: typeof slide.logoHeight === 'number' ? slide.logoHeight : 52
+    logoHeight: typeof slide.logoHeight === 'number' ? slide.logoHeight : 52,
+    legalSize:
+      typeof slide.legalSize === 'number'
+        ? Math.max(25, Math.min(400, slide.legalSize))
+        : 100,
+    legalOpacity:
+      typeof slide.legalOpacity === 'number'
+        ? Math.max(0, Math.min(100, slide.legalOpacity))
+        : 72,
+    legalShadow: typeof slide.legalShadow === 'boolean' ? slide.legalShadow : false,
+    legalShadowOpacity:
+      typeof slide.legalShadowOpacity === 'number'
+        ? Math.max(0, Math.min(100, slide.legalShadowOpacity))
+        : 35
   }
 }
 
-function loadSettings() {
+function isValidAspectSlideFields(value: unknown): value is AspectSlideFields {
+  if (!value || typeof value !== 'object') return false
+  const fields = value as Partial<AspectSlideFields>
+
+  return (
+    (fields.backgroundColor === undefined || typeof fields.backgroundColor === 'string')
+    && (
+      fields.backgroundPreset === undefined
+      || fields.backgroundPreset === 'solid'
+      || fields.backgroundPreset === 'split'
+      || fields.backgroundPreset === 'checker'
+    )
+    && (fields.splitAngle === undefined || typeof fields.splitAngle === 'number')
+    && (fields.checkerCells === undefined || typeof fields.checkerCells === 'number')
+    && typeof fields.heading === 'string'
+    && typeof fields.headingSize === 'number'
+    && typeof fields.subheading === 'string'
+    && (fields.subheadingSize === undefined || typeof fields.subheadingSize === 'number')
+    && typeof fields.logo === 'string'
+    && typeof fields.logoWidth === 'number'
+    && typeof fields.logoHeight === 'number'
+    && typeof fields.legalText === 'string'
+    && (fields.legalSize === undefined || typeof fields.legalSize === 'number')
+    && (fields.legalOpacity === undefined || typeof fields.legalOpacity === 'number')
+    && (fields.legalShadow === undefined || typeof fields.legalShadow === 'boolean')
+    && (
+      fields.legalShadowOpacity === undefined
+      || typeof fields.legalShadowOpacity === 'number'
+    )
+    && (fields.backgroundImageX === undefined || typeof fields.backgroundImageX === 'number')
+    && (fields.backgroundImageY === undefined || typeof fields.backgroundImageY === 'number')
+    && (fields.backgroundImageScale === undefined || typeof fields.backgroundImageScale === 'number')
+  )
+}
+
+function normalizeAspectSlideFields(fields: AspectSlideFields): AspectSlideFields {
+  return {
+    ...fields,
+    ...(typeof fields.backgroundColor === 'string'
+      ? { backgroundColor: fields.backgroundColor }
+      : {}),
+    ...(fields.backgroundPreset === 'solid'
+      || fields.backgroundPreset === 'split'
+      || fields.backgroundPreset === 'checker'
+      ? { backgroundPreset: normalizeBackgroundPreset(fields.backgroundPreset) }
+      : {}),
+    ...(typeof fields.splitAngle === 'number'
+      ? { splitAngle: normalizeSplitAngle(fields.splitAngle) }
+      : {}),
+    ...(typeof fields.checkerCells === 'number'
+      ? { checkerCells: normalizeCheckerCells(fields.checkerCells) }
+      : {}),
+    headingSize: Math.max(25, Math.min(200, fields.headingSize)),
+    subheadingSize: Math.max(25, Math.min(200, fields.subheadingSize ?? 100)),
+    logoWidth: Math.max(1, Math.min(100, fields.logoWidth)),
+    logoHeight: Math.max(1, Math.min(200, fields.logoHeight)),
+    legalSize: Math.max(25, Math.min(400, fields.legalSize ?? 100)),
+    legalOpacity: Math.max(0, Math.min(100, fields.legalOpacity ?? 72)),
+    legalShadow: fields.legalShadow ?? false,
+    legalShadowOpacity: Math.max(0, Math.min(100, fields.legalShadowOpacity ?? 35)),
+    backgroundImageX: normalizeBackgroundImageX(fields.backgroundImageX),
+    backgroundImageY: normalizeBackgroundImageY(fields.backgroundImageY),
+    backgroundImageScale: normalizeBackgroundImageScale(fields.backgroundImageScale)
+  }
+}
+
+function normalizeAspectSlideSettings(value: unknown): Record<string, AspectSlideSettings> {
+  if (!value || typeof value !== 'object') return {}
+
+  const nextSettings: Record<string, AspectSlideSettings> = {}
+  for (const [key, setting] of Object.entries(value)) {
+    const candidate = setting as Partial<AspectSlideSettings>
+    if (
+      !Array.isArray(candidate.left)
+      || !Array.isArray(candidate.right)
+      || !candidate.left.every(isValidAspectSlideFields)
+      || !candidate.right.every(isValidAspectSlideFields)
+    ) {
+      continue
+    }
+
+    nextSettings[normalizeAspectKey(key)] = {
+      left: candidate.left.map(normalizeAspectSlideFields),
+      right: candidate.right.map(normalizeAspectSlideFields)
+    }
+  }
+
+  return nextSettings
+}
+
+function normalizeAspectPackshotWidths(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object') return {}
+
+  const widths: Record<string, number> = {}
+  for (const [key, width] of Object.entries(value)) {
+    if (typeof width === 'number') {
+      widths[normalizeAspectKey(key)] = normalizePackshotWidth(width)
+    }
+  }
+
+  return widths
+}
+
+function applySettings(settings: Partial<PersistedSettings>) {
+  const leftSlides = settings.panelSlides?.left
+  const rightSlides = settings.panelSlides?.right
+
+  if (
+    Array.isArray(leftSlides)
+    && Array.isArray(rightSlides)
+    && leftSlides.length > 0
+    && leftSlides.length === rightSlides.length
+    && leftSlides.every(isValidSlide)
+    && rightSlides.every(isValidSlide)
+  ) {
+    panelSlides.value = {
+      left: leftSlides.map(normalizeSlide),
+      right: rightSlides.map(normalizeSlide)
+    }
+    requestedSlideCount.value = leftSlides.length
+  }
+
+  if (settings.selectedPanel === 'left' || settings.selectedPanel === 'right') {
+    selectedPanel.value = settings.selectedPanel
+  }
+
+  if (typeof settings.selectedIndex === 'number') {
+    selectedIndex.value = Math.max(
+      0,
+      Math.min(Math.round(settings.selectedIndex), panelSlides.value.left.length - 1)
+    )
+    activeIndex.value = selectedIndex.value
+  }
+
+  if (typeof settings.transitionSeconds === 'number') {
+    transitionSeconds.value = Math.max(0.1, Math.min(3, settings.transitionSeconds))
+  }
+
+  if (typeof settings.pauseSeconds === 'number') {
+    pauseSeconds.value = Math.max(0, Math.min(10, settings.pauseSeconds))
+  }
+  if (typeof settings.firstPauseSeconds === 'number') {
+    firstPauseSeconds.value = Math.max(0, Math.min(10, settings.firstPauseSeconds))
+  } else {
+    firstPauseSeconds.value = pauseSeconds.value
+  }
+
+  if (
+    settings.curve
+    && ['x1', 'y1', 'x2', 'y2'].every(
+      key => typeof settings.curve?.[key as keyof typeof settings.curve] === 'number'
+    )
+  ) {
+    curve.value = { ...settings.curve }
+  }
+
+  if (typeof settings.exportWidth === 'number') {
+    exportWidth.value = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(settings.exportWidth)))
+  }
+  if (typeof settings.exportHeight === 'number') {
+    exportHeight.value = Math.max(minExportDimension, Math.min(maxExportDimension, Math.round(settings.exportHeight)))
+  }
+  if (typeof settings.narrowHorizontalAnimation === 'boolean') {
+    narrowHorizontalAnimation.value = settings.narrowHorizontalAnimation
+  }
+  if (typeof settings.textLineTransition === 'boolean') {
+    textLineTransition.value = settings.textLineTransition
+  }
+  if (typeof settings.exportFps === 'number') {
+    exportFps.value = Math.max(1, Math.min(60, Math.round(settings.exportFps)))
+  }
+  if (typeof settings.exportPrefix === 'string') {
+    exportPrefix.value = settings.exportPrefix
+  }
+  if (settings.exportFormat === 'png' || settings.exportFormat === 'mp4') {
+    exportFormat.value = settings.exportFormat
+  }
+  if (settings.mp4Chroma === 'compatible' || settings.mp4Chroma === 'high') {
+    mp4Chroma.value = settings.mp4Chroma
+  }
+  if (
+    typeof settings.aspectWidth === 'number'
+    && typeof settings.aspectHeight === 'number'
+    && settings.aspectWidth > 0
+    && settings.aspectHeight > 0
+  ) {
+    aspectWidth.value = settings.aspectWidth
+    aspectHeight.value = settings.aspectHeight
+  }
+  aspectSlideSettings.value = normalizeAspectSlideSettings(settings.aspectSlideSettings)
+  aspectPackshotWidths.value = normalizeAspectPackshotWidths(settings.aspectPackshotWidths)
+  const savedCustomPresets = normalizeCustomAspectPresets(settings.customAspectPresets)
+  const savedCustomPacks = normalizeCustomAspectPacks(settings.customAspectPacks)
+  if (settings.aspectWorkspaceVersion === aspectWorkspaceVersion) {
+    customAspectPresets.value = savedCustomPresets
+    customAspectPacks.value = savedCustomPacks
+  } else {
+    const defaultPackIds = new Set(defaultCustomAspectPacks.map(pack => pack.id))
+    const defaultPresetLabels = new Set(defaultCustomAspectPresets.map(preset => preset.label))
+    customAspectPacks.value = [
+      ...defaultCustomAspectPacks.map(pack => ({ ...pack })),
+      ...savedCustomPacks.filter(pack => !defaultPackIds.has(pack.id))
+    ]
+    customAspectPresets.value = [
+      ...defaultCustomAspectPresets.map(preset => ({ ...preset })),
+      ...savedCustomPresets.filter(preset => !defaultPresetLabels.has(preset.label))
+    ]
+  }
+  applyAspectSlideSettings(getAspectKey())
+
+  if (typeof settings.reverseDirections === 'boolean') {
+    reverseDirections.value = settings.reverseDirections
+  }
+  if (typeof settings.swapVerticalPanels === 'boolean') {
+    swapVerticalPanels.value = settings.swapVerticalPanels
+  }
+  if (typeof settings.swapHorizontalPanels === 'boolean') {
+    swapHorizontalPanels.value = settings.swapHorizontalPanels
+  }
+  if (typeof settings.swapUltraNarrowPanels === 'boolean') {
+    swapUltraNarrowPanels.value = settings.swapUltraNarrowPanels
+  }
+  if (typeof settings.loopSlides === 'boolean') {
+    loopSlides.value = settings.loopSlides
+  }
+  if (typeof settings.showPackshotOnFinalSlide === 'boolean') {
+    showPackshotOnFinalSlide.value = settings.showPackshotOnFinalSlide
+  }
+  if (typeof settings.packshotWidth === 'number') {
+    packshotWidth.value = normalizePackshotWidth(settings.packshotWidth)
+    if (!aspectPackshotWidths.value[getAspectKey()]) {
+      aspectPackshotWidths.value[getAspectKey()] = packshotWidth.value
+    }
+  }
+  applyAspectPackshotWidth(getAspectKey())
+
+  if (settings.packshotRenderer === 'canvas' || settings.packshotRenderer === 'svg') {
+    packshotRenderer.value = settings.packshotRenderer
+  }
+  const savedPackshotPlayback = settings.packshotPlayback as string | undefined
+  if (savedPackshotPlayback === 'once' || savedPackshotPlayback === 'loop') {
+    packshotPlayback.value = savedPackshotPlayback
+  } else if (savedPackshotPlayback === 'transition') {
+    packshotPlayback.value = 'once'
+  }
+  if (typeof settings.packshotStartFrame === 'number') {
+    packshotStartFrame.value = Math.max(0, Math.min(80, Math.round(settings.packshotStartFrame)))
+  }
+  if (typeof settings.packshotEndFrame === 'number') {
+    packshotEndFrame.value = Math.max(
+      packshotStartFrame.value + 1,
+      Math.min(80, Math.round(settings.packshotEndFrame))
+    )
+  }
+  if (typeof settings.packshotStartOffsetSeconds === 'number') {
+    packshotStartOffsetSeconds.value = Math.max(
+      0,
+      Math.min(10, settings.packshotStartOffsetSeconds)
+    )
+  }
+  if (typeof settings.packshotDurationSeconds === 'number') {
+    packshotDurationSeconds.value = Math.max(
+      0.1,
+      Math.min(10, settings.packshotDurationSeconds)
+    )
+  }
+}
+
+function openSettingsDatabase() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(settingsDatabaseName, 1)
+
+    request.addEventListener('upgradeneeded', () => {
+      const database = request.result
+      if (!database.objectStoreNames.contains(settingsStoreName)) {
+        database.createObjectStore(settingsStoreName)
+      }
+    })
+    request.addEventListener('success', () => resolve(request.result))
+    request.addEventListener('error', () => reject(request.error))
+  })
+}
+
+async function readSettingsFromIndexedDb() {
+  const database = await openSettingsDatabase()
+
+  return new Promise<string | null>((resolve, reject) => {
+    const transaction = database.transaction(settingsStoreName, 'readonly')
+    const store = transaction.objectStore(settingsStoreName)
+    const request = store.get(settingsRecordKey)
+
+    request.addEventListener('success', () => {
+      resolve(typeof request.result === 'string' ? request.result : null)
+    })
+    request.addEventListener('error', () => reject(request.error))
+    transaction.addEventListener('complete', () => database.close())
+    transaction.addEventListener('abort', () => {
+      database.close()
+      reject(transaction.error)
+    })
+  })
+}
+
+async function writeSettingsToIndexedDb(serializedSettings: string) {
+  const database = await openSettingsDatabase()
+
+  return new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(settingsStoreName, 'readwrite')
+    const store = transaction.objectStore(settingsStoreName)
+    store.put(serializedSettings, settingsRecordKey)
+
+    transaction.addEventListener('complete', () => {
+      database.close()
+      resolve()
+    })
+    transaction.addEventListener('abort', () => {
+      database.close()
+      reject(transaction.error)
+    })
+    transaction.addEventListener('error', () => {
+      database.close()
+      reject(transaction.error)
+    })
+  })
+}
+
+async function removeSettingsFromIndexedDb() {
+  const database = await openSettingsDatabase()
+
+  return new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(settingsStoreName, 'readwrite')
+    const store = transaction.objectStore(settingsStoreName)
+    store.delete(settingsRecordKey)
+
+    transaction.addEventListener('complete', () => {
+      database.close()
+      resolve()
+    })
+    transaction.addEventListener('abort', () => {
+      database.close()
+      reject(transaction.error)
+    })
+    transaction.addEventListener('error', () => {
+      database.close()
+      reject(transaction.error)
+    })
+  })
+}
+
+async function loadSettings() {
   try {
-    const saved = localStorage.getItem(storageKey)
+    if (window.__slotAnimationRenderSettings) {
+      applySettings(window.__slotAnimationRenderSettings)
+      window.__slotAnimationRenderSettingsLoaded = true
+      return
+    }
+
+    const saved = await readSettingsFromIndexedDb()
+      .catch(() => localStorage.getItem(storageKey))
+      || localStorage.getItem(storageKey)
     if (!saved) return
 
     const settings = JSON.parse(saved) as Partial<PersistedSettings>
-    const leftSlides = settings.panelSlides?.left
-    const rightSlides = settings.panelSlides?.right
-
-    if (
-      Array.isArray(leftSlides)
-      && Array.isArray(rightSlides)
-      && leftSlides.length > 0
-      && leftSlides.length === rightSlides.length
-      && leftSlides.every(isValidSlide)
-      && rightSlides.every(isValidSlide)
-    ) {
-      panelSlides.value = {
-        left: leftSlides.map(normalizeSlide),
-        right: rightSlides.map(normalizeSlide)
-      }
-      requestedSlideCount.value = leftSlides.length
-    }
-
-    if (settings.selectedPanel === 'left' || settings.selectedPanel === 'right') {
-      selectedPanel.value = settings.selectedPanel
-    }
-
-    if (typeof settings.selectedIndex === 'number') {
-      selectedIndex.value = Math.max(
-        0,
-        Math.min(Math.round(settings.selectedIndex), panelSlides.value.left.length - 1)
-      )
-      activeIndex.value = selectedIndex.value
-    }
-
-    if (typeof settings.transitionSeconds === 'number') {
-      transitionSeconds.value = Math.max(0.1, Math.min(3, settings.transitionSeconds))
-    }
-
-    if (typeof settings.pauseSeconds === 'number') {
-      pauseSeconds.value = Math.max(0, Math.min(10, settings.pauseSeconds))
-    }
-    if (typeof settings.firstPauseSeconds === 'number') {
-      firstPauseSeconds.value = Math.max(0, Math.min(10, settings.firstPauseSeconds))
-    } else {
-      firstPauseSeconds.value = pauseSeconds.value
-    }
-
-    if (
-      settings.curve
-      && ['x1', 'y1', 'x2', 'y2'].every(
-        key => typeof settings.curve?.[key as keyof typeof settings.curve] === 'number'
-      )
-    ) {
-      curve.value = { ...settings.curve }
-    }
-
-    if (typeof settings.exportWidth === 'number') {
-      exportWidth.value = Math.max(320, Math.min(3840, Math.round(settings.exportWidth)))
-    }
-    if (typeof settings.exportHeight === 'number') {
-      exportHeight.value = Math.max(180, Math.min(3840, Math.round(settings.exportHeight)))
-    }
-    if (typeof settings.exportFps === 'number') {
-      exportFps.value = Math.max(1, Math.min(60, Math.round(settings.exportFps)))
-    }
-    if (typeof settings.exportPrefix === 'string') {
-      exportPrefix.value = settings.exportPrefix
-    }
-    if (settings.exportFormat === 'png' || settings.exportFormat === 'mp4') {
-      exportFormat.value = settings.exportFormat
-    }
-    if (
-      typeof settings.aspectWidth === 'number'
-      && typeof settings.aspectHeight === 'number'
-      && settings.aspectWidth > 0
-      && settings.aspectHeight > 0
-    ) {
-      aspectWidth.value = settings.aspectWidth
-      aspectHeight.value = settings.aspectHeight
-    }
-    if (typeof settings.reverseDirections === 'boolean') {
-      reverseDirections.value = settings.reverseDirections
-    }
-    if (typeof settings.swapVerticalPanels === 'boolean') {
-      swapVerticalPanels.value = settings.swapVerticalPanels
-    }
-    if (typeof settings.loopSlides === 'boolean') {
-      loopSlides.value = settings.loopSlides
-    }
-    if (typeof settings.showPackshotOnFinalSlide === 'boolean') {
-      showPackshotOnFinalSlide.value = settings.showPackshotOnFinalSlide
-    }
-    if (typeof settings.packshotWidth === 'number') {
-      packshotWidth.value = Math.max(5, Math.min(100, Math.round(settings.packshotWidth)))
-    }
-    if (settings.packshotRenderer === 'canvas' || settings.packshotRenderer === 'svg') {
-      packshotRenderer.value = settings.packshotRenderer
-    }
-    const savedPackshotPlayback = settings.packshotPlayback as string | undefined
-    if (savedPackshotPlayback === 'once' || savedPackshotPlayback === 'loop') {
-      packshotPlayback.value = savedPackshotPlayback
-    } else if (savedPackshotPlayback === 'transition') {
-      packshotPlayback.value = 'once'
-    }
-    if (typeof settings.packshotStartFrame === 'number') {
-      packshotStartFrame.value = Math.max(0, Math.min(80, Math.round(settings.packshotStartFrame)))
-    }
-    if (typeof settings.packshotEndFrame === 'number') {
-      packshotEndFrame.value = Math.max(
-        packshotStartFrame.value + 1,
-        Math.min(80, Math.round(settings.packshotEndFrame))
-      )
-    }
-    if (typeof settings.packshotStartOffsetSeconds === 'number') {
-      packshotStartOffsetSeconds.value = Math.max(
-        0,
-        Math.min(10, settings.packshotStartOffsetSeconds)
-      )
-    }
-    if (typeof settings.packshotDurationSeconds === 'number') {
-      packshotDurationSeconds.value = Math.max(
-        0.1,
-        Math.min(10, settings.packshotDurationSeconds)
-      )
-    }
+    applySettings(settings)
+    void writeSettingsToIndexedDb(saved)
   } catch {
     localStorage.removeItem(storageKey)
+    void removeSettingsFromIndexedDb()
   }
 }
 
-function saveSettings() {
-  const settings: PersistedSettings = {
+function getCurrentSettings(): PersistedSettings {
+  storeCurrentAspectSettings()
+
+  return {
     panelSlides: panelSlides.value,
+    aspectWorkspaceVersion,
+    aspectSlideSettings: aspectSlideSettings.value,
+    aspectPackshotWidths: aspectPackshotWidths.value,
+    customAspectPresets: customAspectPresets.value,
+    customAspectPacks: customAspectPacks.value,
     selectedPanel: selectedPanel.value,
     selectedIndex: selectedIndex.value,
     requestedSlideCount: requestedSlideCount.value,
@@ -1612,10 +3171,15 @@ function saveSettings() {
     exportFps: exportFps.value,
     exportPrefix: exportPrefix.value,
     exportFormat: exportFormat.value,
+    mp4Chroma: mp4Chroma.value,
     aspectWidth: aspectWidth.value,
     aspectHeight: aspectHeight.value,
     reverseDirections: reverseDirections.value,
+    narrowHorizontalAnimation: narrowHorizontalAnimation.value,
+    textLineTransition: textLineTransition.value,
     swapVerticalPanels: swapVerticalPanels.value,
+    swapHorizontalPanels: swapHorizontalPanels.value,
+    swapUltraNarrowPanels: swapUltraNarrowPanels.value,
     loopSlides: loopSlides.value,
     showPackshotOnFinalSlide: showPackshotOnFinalSlide.value,
     packshotWidth: packshotWidth.value,
@@ -1626,22 +3190,146 @@ function saveSettings() {
     packshotStartOffsetSeconds: packshotStartOffsetSeconds.value,
     packshotDurationSeconds: packshotDurationSeconds.value
   }
+}
+
+function stripInlineStorageAsset(source: string) {
+  return source.startsWith('data:') || source.startsWith('blob:') ? '' : source
+}
+
+function createLocalStorageFallbackSettings(settings: PersistedSettings): PersistedSettings {
+  const sanitizeSlide = (slide: Slide): Slide => ({
+    ...slide,
+    backgroundImage: stripInlineStorageAsset(slide.backgroundImage),
+    logo: stripInlineStorageAsset(slide.logo)
+  })
+  const sanitizeFields = (fields: AspectSlideFields): AspectSlideFields => ({
+    ...fields,
+    logo: stripInlineStorageAsset(fields.logo)
+  })
+
+  return {
+    ...settings,
+    panelSlides: {
+      left: settings.panelSlides.left.map(sanitizeSlide),
+      right: settings.panelSlides.right.map(sanitizeSlide)
+    },
+    aspectSlideSettings: Object.fromEntries(
+      Object.entries(settings.aspectSlideSettings || {}).map(([key, value]) => [
+        key,
+        {
+          left: value.left.map(sanitizeFields),
+          right: value.right.map(sanitizeFields)
+        }
+      ])
+    )
+  }
+}
+
+async function saveSettings() {
+  const settings = getCurrentSettings()
+  const serializedSettings = JSON.stringify(settings)
 
   try {
-    localStorage.setItem(storageKey, JSON.stringify(settings))
+    await writeSettingsToIndexedDb(serializedSettings)
   } catch (error) {
-    console.warn('Unable to save animation settings to localStorage.', error)
+    console.warn('Unable to save animation settings to IndexedDB.', error)
   }
+
+  try {
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify(createLocalStorageFallbackSettings(settings))
+    )
+  } catch (error) {
+    console.warn('Unable to save animation settings to localStorage fallback.', error)
+  }
+}
+
+function createPresetPayload() {
+  return {
+    type: 'wb-gen-preset',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings: getCurrentSettings()
+  }
+}
+
+function isPresetImport(value: unknown): value is {
+  type?: string
+  settings?: Partial<PersistedSettings>
+} & Partial<PersistedSettings> {
+  return Boolean(value && typeof value === 'object')
+}
+
+function importPreset(data: unknown) {
+  try {
+    if (!isPresetImport(data)) throw new Error('Preset file is not valid JSON.')
+    const settings = data.type === 'wb-gen-preset' && data.settings ? data.settings : data
+    const leftSlides = settings.panelSlides?.left
+    const rightSlides = settings.panelSlides?.right
+
+    if (
+      !Array.isArray(leftSlides)
+      || !Array.isArray(rightSlides)
+      || leftSlides.length === 0
+      || leftSlides.length !== rightSlides.length
+      || !leftSlides.every(isValidSlide)
+      || !rightSlides.every(isValidSlide)
+    ) {
+      throw new Error('Preset file does not contain valid slide settings.')
+    }
+
+    applySettings(settings)
+    saveSettings()
+  } catch (error) {
+    exportError.value = error instanceof Error
+      ? error.message
+      : 'Unable to import preset.'
+  }
+}
+
+function showPresetError(message: string) {
+  exportError.value = message
+}
+
+function recordUndoSnapshot() {
+  const snapshot = JSON.stringify(getCurrentSettings())
+  if (undoHistory[undoHistory.length - 1] === snapshot) return
+
+  undoHistory.push(snapshot)
+  if (undoHistory.length > maxUndoHistory) undoHistory.shift()
+}
+
+function scheduleUndoSnapshot() {
+  clearTimeout(undoSnapshotTimer)
+  undoSnapshotTimer = setTimeout(recordUndoSnapshot, 250)
+}
+
+function undoLastChange() {
+  clearTimeout(undoSnapshotTimer)
+  recordUndoSnapshot()
+  if (undoHistory.length < 2) return
+
+  undoHistory.pop()
+  const previousSnapshot = undoHistory[undoHistory.length - 1]
+  if (!previousSnapshot) return
+
+  applySettings(JSON.parse(previousSnapshot) as Partial<PersistedSettings>)
+  clearTimeout(transitionTimer)
+  leavingIndex.value = null
+  restartAutoplay()
 }
 
 function scheduleSave() {
   clearTimeout(saveTimer)
   clearInterval(exportProgressTimer)
   saveTimer = setTimeout(saveSettings, 250)
+  scheduleUndoSnapshot()
 }
 
-onMounted(() => {
-  loadSettings()
+onMounted(async () => {
+  await loadSettings()
+  recordUndoSnapshot()
   initPackshotAnimation()
   restartAutoplay()
   window.addEventListener('keydown', handlePlaybackShortcut)
@@ -1649,6 +3337,8 @@ onMounted(() => {
   watch(
     [
       panelSlides,
+      customAspectPresets,
+      customAspectPacks,
       selectedPanel,
       selectedIndex,
       requestedSlideCount,
@@ -1661,10 +3351,15 @@ onMounted(() => {
       exportFps,
       exportPrefix,
       exportFormat,
+      mp4Chroma,
       aspectWidth,
       aspectHeight,
       reverseDirections,
+      narrowHorizontalAnimation,
+      textLineTransition,
       swapVerticalPanels,
+      swapHorizontalPanels,
+      swapUltraNarrowPanels,
       loopSlides,
       showPackshotOnFinalSlide,
       packshotWidth,
@@ -1684,6 +3379,7 @@ onBeforeUnmount(() => {
   clearInterval(autoplayTimer)
   clearTimeout(transitionTimer)
   clearTimeout(saveTimer)
+  clearTimeout(undoSnapshotTimer)
   clearTimeout(packshotStartTimer)
   if (packshotTransitionFrame) cancelAnimationFrame(packshotTransitionFrame)
   stopCurveDrag()
@@ -1703,85 +3399,122 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
 
 <template>
   <main class="animation-generator">
+    <UndoShortcut @undo="undoLastChange" />
     <section class="animation-preview" aria-label="Animation preview">
       <div
-        class="slot-stage"
-        :class="{
-          'is-portrait': isPortrait,
-          'is-reversed': reverseDirections,
-          'is-swapped': isPortrait && swapVerticalPanels,
-          'is-snapping': isSnappingSlides
-        }"
+        class="stage-zoom-frame"
+        :class="{ 'is-portrait': isPortrait }"
         :style="{
-          '--transition-duration': `${transitionSeconds}s`,
-          '--transition-curve': easingValue,
+          '--stage-preview-zoom': previewZoomScale,
           aspectRatio: `${aspectWidth} / ${aspectHeight}`
         }"
       >
         <div
-          v-for="side in panelSides"
-          :key="side"
-          class="slot-panel"
-          :class="`slot-panel--${side}`"
+          class="slot-stage"
+          :class="{
+            'slot-stage--main': true,
+            'is-portrait': isPortrait,
+            'is-ultra-narrow': isUltraNarrow,
+            'is-reversed': reverseDirections,
+            'is-horizontal-animation': isUltraNarrow && narrowHorizontalAnimation,
+            'is-swapped': isPortrait && activePanelSwap,
+            'is-snapping': isSnappingSlides
+          }"
+          :style="{
+            '--transition-duration': `${transitionSeconds}s`,
+            '--transition-curve': easingValue,
+            aspectRatio: `${aspectWidth} / ${aspectHeight}`
+          }"
         >
-          <article
-            v-for="(slide, index) in panelSlides[side]"
-            :key="index"
-            class="slot-slide"
-            :class="{
-              'is-active': activeIndex === index,
-              'is-leaving': leavingIndex === index
-            }"
-            :style="{
-              backgroundColor: slide.backgroundColor,
-              backgroundImage: slide.backgroundImage
-                ? `url(${slide.backgroundImage})`
-                : slide.backgroundPreset === 'split'
-                  ? `linear-gradient(${(slide.splitAngle + (isPortrait ? 270 : 0)) % 360}deg, #ff00ff 0 50%, #7f30e3 50% 100%)`
-                  : 'none'
-            }"
-            :aria-hidden="activeIndex !== index"
+          <div
+            v-for="(side, sideVisualIndex) in stagePanelSides"
+            :key="side"
+            class="slot-panel"
+            :class="[
+              `slot-panel--${side}`,
+              sideVisualIndex === 0 ? 'slot-panel--visual-start' : 'slot-panel--visual-end'
+            ]"
           >
-            <div class="slide-content">
-              <div class="slide-logo">
-                <img
-                  v-if="slide.logo.startsWith('data:')"
-                  :src="slide.logo"
+            <article
+              v-for="(slide, index) in panelSlides[side]"
+              :key="index"
+              class="slot-slide"
+              :class="{
+                'is-active': activeIndex === index,
+                'is-leaving': leavingIndex === index,
+                'has-checker-background': !slide.backgroundImage && slide.backgroundPreset === 'checker'
+              }"
+              :style="getBrandBackgroundStyle(slide)"
+              :aria-hidden="activeIndex !== index"
+            >
+              <DraggableBackground
+                v-if="slide.backgroundImage"
+                :src="slide.backgroundImage"
+                :x="normalizeBackgroundImageX(slide.backgroundImageX)"
+                :y="normalizeBackgroundImageY(slide.backgroundImageY)"
+                :scale="normalizeBackgroundImageScale(slide.backgroundImageScale)"
+                :editable="side === selectedPanel && index === selectedIndex && activeIndex === index"
+                @update:x="slide.backgroundImageX = $event"
+                @update:y="slide.backgroundImageY = $event"
+                @update:scale="slide.backgroundImageScale = $event"
+              />
+              <div
+                class="slide-content"
+                :class="{ 'has-brand-pink-text': hasWhiteBackground(slide) }"
+                :style="{ '--logo-width': `${slide.logoWidth}%` }"
+              >
+              <div
+                class="slide-logo"
+                :class="{
+                  'has-logo-image': isLogoImage(slide.logo),
+                  'is-empty': !slide.logo
+                }"
+              >
+                  <img
+                    v-if="isLogoImage(slide.logo)"
+                    :src="getLogoSource(slide)"
+                    :style="{
+                      width: isUltraNarrow ? '100%' : `${slide.logoWidth}%`,
+                      height: 'auto'
+                    }"
+                    alt=""
+                  >
+                  <span v-else-if="slide.logo">{{ slide.logo }}</span>
+                </div>
+
+                <AnimatedSlideCopy
+                  :heading="slide.heading"
+                  :heading-size="slide.headingSize"
+                  :subheading="slide.subheading"
+                  :subheading-size="slide.subheadingSize"
+                  :animate="textLineTransition"
+                />
+
+                <p
+                  v-if="slide.legalText"
+                  class="slide-legal"
                   :style="{
-                    width: `${slide.logoWidth}%`,
-                    height: 'auto'
+                    '--legal-scale': slide.legalSize / 100,
+                    '--legal-opacity': slide.legalOpacity / 100,
+                    '--legal-shadow': slide.legalShadow
+                      ? `0 1px 3px rgb(0 0 0 / ${slide.legalShadowOpacity}%)`
+                      : 'none'
                   }"
-                  alt=""
                 >
-                <span v-else-if="slide.logo">{{ slide.logo }}</span>
-              </div>
-
-              <div class="slide-copy">
-                <p v-if="slide.subheading" class="slide-subheading">
-                  {{ slide.subheading }}
+                  {{ slide.legalText }}
                 </p>
-                <h2
-                  v-if="slide.heading"
-                  :style="{ '--heading-scale': slide.headingSize / 100 }"
-                >
-                  {{ slide.heading }}
-                </h2>
               </div>
+            </article>
+          </div>
 
-              <p v-if="slide.legalText" class="slide-legal">
-                {{ slide.legalText }}
-              </p>
-            </div>
-          </article>
-        </div>
-
-        <div
-          class="packshot-overlay"
-          :class="{ 'is-visible': shouldShowPackshot }"
-          :style="{ width: `${packshotWidth}%` }"
-          aria-hidden="true"
-        >
-          <div ref="packshotContainer" class="packshot-animation" />
+          <div
+            class="packshot-overlay"
+            :class="{ 'is-visible': shouldShowPackshot }"
+            :style="{ width: `${packshotWidth}%` }"
+            aria-hidden="true"
+          >
+            <div ref="packshotContainer" class="packshot-animation" />
+          </div>
         </div>
       </div>
 
@@ -1790,30 +3523,54 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           {{ isPlaying ? 'Stop' : 'Play' }}
         </button>
 
-        <div class="slide-progress" aria-label="Slides">
-          <button
-            v-for="(_, index) in panelSlides.left"
-            :key="index"
-            type="button"
-            :class="{ 'is-current': activeIndex === index }"
-            :aria-label="`Show slide ${index + 1}`"
-            @click="selectSlide(index)"
-          />
-        </div>
+        <StageZoomControl v-model="previewZoom" />
+
+        <SlideSelector
+          :count="slideCount"
+          :current-index="activeIndex"
+          variant="progress"
+          aria-label="Slides"
+          @select="selectSlide"
+        />
       </div>
+
+      <AspectPreviewGrid
+        :presets="allAspectPresets"
+        :packs="allAspectPacks"
+        :active-width="aspectWidth"
+        :active-height="aspectHeight"
+        :get-slides="getAspectPreviewSlides"
+        :get-background-style="getAspectPreviewBackgroundStyle"
+        :is-logo-image="isLogoImage"
+        :get-logo-source="getLogoSource"
+        :has-white-background="hasWhiteBackground"
+        :swap-vertical-panels="swapVerticalPanels"
+        :swap-horizontal-panels="swapHorizontalPanels"
+        :swap-ultra-narrow-panels="swapUltraNarrowPanels"
+        :render-disabled="isExporting"
+        :is-rendering="isRenderingAspectGroup"
+        :render-progress="exportProgress"
+        @select="setAspectRatio"
+        @add="addCustomAspectPreset"
+        @add-pack="addCustomAspectPack"
+        @rename-pack="renameCustomAspectPack"
+        @render-group="renderAspectGroupImages"
+        @remove-pack="removeCustomAspectPack"
+        @remove="removeCustomAspectPreset"
+      />
     </section>
 
     <aside ref="controlsPanel" class="animation-controls">
-      <header class="controls-title">
+      <!-- <header class="controls-title">
         <p>Animation generator</p>
         <h1>{{ panelLabel }} panel</h1>
-      </header>
+      </header> -->
 
-      <div class="control-field aspect-control">
+     <!-- <div class="control-field aspect-control">
         <label>Aspect ratio <span>{{ activeAspectLabel }}</span></label>
         <div class="aspect-presets">
           <button
-            v-for="preset in aspectPresets"
+            v-for="preset in quickAspectPresets"
             :key="preset.label"
             type="button"
             :class="{
@@ -1836,7 +3593,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             <input
               v-model.number="exportWidth"
               type="number"
-              min="320"
+              :min="minExportDimension"
               max="3840"
               step="1"
               @change="normalizeAspectRatio"
@@ -1848,22 +3605,17 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             <input
               v-model.number="exportHeight"
               type="number"
-              min="180"
+              :min="minExportDimension"
               max="3840"
               step="1"
               @change="normalizeAspectRatio"
             >
           </label>
         </div>
-        <button
-          v-if="isPortrait"
-          type="button"
-          class="swap-panels-button"
-          @click="swapVerticalPanels = !swapVerticalPanels"
-        >
-          Swap Top / Bottom
-        </button>
-      </div>
+
+      </div> -->
+
+
 
       <div class="control-field slide-count-control">
         <label for="slide-count">Total slides</label>
@@ -1893,200 +3645,121 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             +
           </button>
         </div>
+        
       </div>
 
-      <div class="panel-tabs" aria-label="Select panel to edit">
-        <button
-          v-for="side in panelSides"
-          :key="side"
-          type="button"
-          :class="{ 'is-selected': selectedPanel === side }"
-          @click="selectPanel(side)"
-        >
-          {{
-            isPortrait
-              ? side === 'left' ? 'top' : 'bottom'
-              : side
-          }}
-        </button>
+      <div class="editor-sticky-nav">
+        <div class="panel-tabs" aria-label="Select panel to edit">
+          <button
+            v-for="side in panelSides"
+            :key="side"
+            type="button"
+            :class="{ 'is-selected': selectedPanel === side }"
+            @click="selectPanel(side)"
+          >
+            {{ getPanelLabel(side) }}
+          </button>
+        </div>
+        <SlideSelector
+          :count="panelSlides[selectedPanel].length"
+          :current-index="selectedIndex"
+          variant="tabs"
+          aria-label="Select slide to edit"
+          @select="selectSlide"
+        />
       </div>
 
-      <div class="slide-tabs" aria-label="Select slide to edit">
+      <div class="editor-action-controls">
+        <SlideEditActions
+          :slide-count="slideCount"
+          :selected-index="selectedIndex"
+          @insert="insertSlideAt"
+          @remove="removeSelectedSlide"
+        />
+
         <button
-          v-for="(_, index) in panelSlides[selectedPanel]"
-          :key="index"
           type="button"
-          :class="{ 'is-selected': selectedIndex === index }"
-          @click="selectSlide(index)"
+          class="button button--outline button--compact button--block swap-panels-button"
+          @click="togglePanelSwap"
         >
-          {{ index + 1 }}
+          {{ panelSwapButtonLabel }}
         </button>
       </div>
 
       <template v-if="selectedSlide">
-        <div class="control-field">
-          <label for="heading">Heading <span>optional</span></label>
-          <input
-            id="heading"
-            v-model="selectedSlide.heading"
-            placeholder="Add heading"
-          >
-          <div class="heading-size-control">
-            <label>
-              <span>Heading size</span>
-              <div class="range-row">
-                <input
-                  v-model.number="selectedSlide.headingSize"
-                  type="range"
-                  min="25"
-                  max="200"
-                  step="1"
-                >
-                <output>{{ Math.round(selectedSlide.headingSize) }}%</output>
-              </div>
-            </label>
-          </div>
-        </div>
+        <TextControls
+          v-model:heading="selectedSlide.heading"
+          v-model:heading-size="selectedSlide.headingSize"
+          v-model:subheading="selectedSlide.subheading"
+          v-model:subheading-size="selectedSlide.subheadingSize"
+          v-model:legal-text="selectedSlide.legalText"
+          v-model:legal-size="selectedSlide.legalSize"
+          v-model:legal-opacity="selectedSlide.legalOpacity"
+          v-model:legal-shadow="selectedSlide.legalShadow"
+          v-model:legal-shadow-opacity="selectedSlide.legalShadowOpacity"
+          v-model:logo-width="selectedSlide.logoWidth"
+          :show-logo-width="isLogoImage(selectedSlide.logo)"
+          @apply-to-aspects="applySelectedTextToAspectRatios"
+        />
 
-        <div class="control-field">
-          <label for="subheading">Subheading <span>optional</span></label>
-          <input
-            id="subheading"
-            v-model="selectedSlide.subheading"
-            placeholder="Add subheading"
-          >
-        </div>
+        <BackgroundSelector
+          v-model:background-color="selectedSlide.backgroundColor"
+          v-model:background-preset="selectedSlide.backgroundPreset"
+          v-model:split-angle="selectedSlide.splitAngle"
+          v-model:checker-cells="selectedSlide.checkerCells"
+          @rotate="rotateSplitDirection"
+          @apply-to-aspects="applySelectedBackgroundToAspectRatios"
+        />
 
-        <div class="control-field">
-          <label for="legal">Legal text <span>optional</span></label>
-          <textarea
-            id="legal"
-            v-model="selectedSlide.legalText"
-            placeholder="Add legal text"
-          />
-        </div>
-
-        <div class="control-field">
-          <label>Background color</label>
-          <div class="color-control">
-            <button
-              type="button"
-              class="color-preset color-preset--pink"
-              :class="{ 'is-selected': selectedSlide.backgroundColor.toLowerCase() === '#ff00ff' }"
-              aria-label="Use #FF00FF"
-              @click="selectedSlide.backgroundColor = '#ff00ff'; selectedSlide.backgroundPreset = 'solid'"
-            >
-              <span>#FF00FF</span>
-            </button>
-            <button
-              type="button"
-              class="color-preset color-preset--purple"
-              :class="{ 'is-selected': selectedSlide.backgroundColor.toLowerCase() === '#7f30e3' }"
-              aria-label="Use #7F30E3"
-              @click="selectedSlide.backgroundColor = '#7f30e3'; selectedSlide.backgroundPreset = 'solid'"
-            >
-              <span>#7F30E3</span>
-            </button>
-            <label class="custom-color">
-              <input
-                v-model="selectedSlide.backgroundColor"
-                type="color"
-                aria-label="Custom background color"
-                @input="selectedSlide.backgroundPreset = 'solid'"
-              >
-              <span>Custom</span>
-            </label>
-          </div>
-
-          <button
-            type="button"
-            class="split-preset"
-            :class="{ 'is-selected': selectedSlide.backgroundPreset === 'split' }"
-            @click="selectedSlide.backgroundPreset = 'split'"
-          >
-            <span class="split-preset-swatch" />
-            <span>Half brand colors</span>
-          </button>
-
-          <div v-if="selectedSlide.backgroundPreset === 'split'" class="split-direction">
-            <label for="split-angle">Direction</label>
-            <div class="range-row">
-              <input
-                id="split-angle"
-                v-model.number="selectedSlide.splitAngle"
-                type="range"
-                min="0"
-                max="359"
-                step="1"
-              >
-              <output>{{ selectedSlide.splitAngle }}°</output>
-            </div>
-            <button type="button" @click="rotateSplitDirection">
-              Rotate 90°
-            </button>
-          </div>
-        </div>
-
-        <div class="control-field">
-          <label for="background">Background image <span>optional</span></label>
+        <div class="control-section control-field">
+          <h2>Background media</h2>
           <div class="asset-control">
             <label
-              class="upload-button"
+              class="button button--outline upload-button"
               for="background"
               @pointerdown="rememberControlsScroll"
             >
-              {{ selectedSlide.backgroundImage ? 'Replace image' : 'Choose image' }}
+              {{ selectedSlide.backgroundImage ? 'Replace media' : 'Choose media' }}
             </label>
             <button
               v-if="selectedSlide.backgroundImage"
               type="button"
-              class="clear-button"
+              class="button button--secondary clear-button"
               @click="clearAsset('backgroundImage')"
             >
               Remove
             </button>
           </div>
-          <div
-            v-if="selectedSlide.logo.startsWith('data:')"
-            class="logo-size-control"
-          >
-            <label>
-              <span>Width</span>
-              <div class="range-row">
-                <input
-                  v-model.number="selectedSlide.logoWidth"
-                  type="range"
-                  min="1"
-                  max="100"
-                  step="1"
-                >
-                <output>{{ Math.round(selectedSlide.logoWidth) }}%</output>
-              </div>
-            </label>
-          </div>
           <input
             id="background"
             class="visually-hidden"
             type="file"
-            accept="image/*"
+            accept="image/*,video/*"
             @change="handleAssetUpload($event, 'backgroundImage')"
           >
         </div>
 
-        <div class="control-field">
-          <label for="logo">Logo <span>optional</span></label>
+        <div class="control-section control-field">
+          <h2>Logo</h2>
           <input
-            v-if="!selectedSlide.logo.startsWith('data:')"
+            v-if="!isLogoImage(selectedSlide.logo)"
             id="logo-text"
             v-model="selectedSlide.logo"
             placeholder="Logo text"
           >
           <div v-else class="logo-upload-status">
-            Uploaded logo
+            {{ selectedSlide.logo === defaultLogo ? 'Default logo' : 'Uploaded logo' }}
           </div>
           <div class="asset-control">
+            <button
+              type="button"
+              class="button button--outline upload-button"
+              @click="useDefaultLogo"
+            >
+              Default logo
+            </button>
             <label
-              class="upload-button"
+              class="button button--outline upload-button"
               for="logo"
               @pointerdown="rememberControlsScroll"
             >
@@ -2095,7 +3768,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             <button
               v-if="selectedSlide.logo"
               type="button"
-              class="clear-button"
+              class="button button--secondary clear-button"
               @click="clearAsset('logo')"
             >
               Clear
@@ -2111,7 +3784,8 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         </div>
       </template>
 
-      <section class="packshot-control">
+      <section class="control-section packshot-control">
+        <h2>Packshot</h2>
         <label class="direction-toggle">
           <span>
             <strong>Packshot on final slide</strong>
@@ -2126,6 +3800,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             <input
               id="packshot-width"
               v-model.number="packshotWidth"
+              :style="rangeStyle(packshotWidth, 5, 100)"
               type="range"
               min="5"
               max="100"
@@ -2195,9 +3870,10 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         </div>
       </section>
 
-      <section class="timing-control">
+      <section class="control-section timing-control">
+        <h2>Motion</h2>
         <div class="timing-summary">
-          <span>Total duration</span>
+          <small>Total duration</small>
           <strong>{{ totalDuration.toFixed(2) }}s</strong>
         </div>
 
@@ -2209,6 +3885,14 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           <input v-model="reverseDirections" type="checkbox">
         </label>
 
+        <label v-if="isUltraNarrow" class="direction-toggle">
+          <span>
+            <strong>Left to right</strong>
+            <small>Use horizontal slide movement for narrow banners</small>
+          </span>
+          <input v-model="narrowHorizontalAnimation" type="checkbox">
+        </label>
+
         <label class="direction-toggle">
           <span>
             <strong>Loop slides</strong>
@@ -2217,12 +3901,21 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           <input v-model="loopSlides" type="checkbox">
         </label>
 
+        <label class="direction-toggle">
+          <span>
+            <strong>Text word fade</strong>
+            <small>Fade heading and subheading words during transitions</small>
+          </span>
+          <input v-model="textLineTransition" type="checkbox">
+        </label>
+
         <div class="control-field">
           <label for="transition-time">Slide transition timing</label>
           <div class="range-row">
             <input
               id="transition-time"
               v-model.number="transitionSeconds"
+              :style="rangeStyle(transitionSeconds, 0.1, 3)"
               type="range"
               min="0.1"
               max="3"
@@ -2238,6 +3931,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             <input
               id="first-pause-time"
               v-model.number="firstPauseSeconds"
+              :style="rangeStyle(firstPauseSeconds, 0, 10)"
               type="range"
               min="0"
               max="10"
@@ -2253,6 +3947,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             <input
               id="pause-time"
               v-model.number="pauseSeconds"
+              :style="rangeStyle(pauseSeconds, 0, 10)"
               type="range"
               min="0"
               max="10"
@@ -2265,9 +3960,9 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         <div class="control-field curve-control">
           <label>Transition curve</label>
           <div class="curve-presets">
-            <button type="button" @click="setCurve(0.25, 0.1, 0.25, 1)">Ease</button>
-            <button type="button" @click="setCurve(0.42, 0, 0.58, 1)">In out</button>
-            <button type="button" @click="setCurve(0.76, 0, 0.24, 1)">Snappy</button>
+            <button class="button button--secondary" type="button" @click="setCurve(0.25, 0.1, 0.25, 1)">Ease</button>
+            <button class="button button--secondary" type="button" @click="setCurve(0.42, 0, 0.58, 1)">In out</button>
+            <button class="button button--secondary" type="button" @click="setCurve(0.76, 0, 0.24, 1)">Snappy</button>
           </div>
 
           <div class="curve-editor">
@@ -2322,11 +4017,16 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         </div>
       </section>
 
-      <section class="export-control">
+      <section class="control-section export-control">
         <div class="export-heading">
           <div>
-            <p>Render</p>
-            <h2>{{ exportFormat === 'mp4' ? 'MP4 video' : 'PNG sequence' }}</h2>
+            <h2>
+              {{
+                exportFormat === 'mp4'
+                  ? mp4Chroma === 'high' ? 'MOV video' : 'MP4 video'
+                  : 'PNG sequence'
+              }}
+            </h2>
           </div>
           <strong>{{ exportFrameCount }} frames</strong>
         </div>
@@ -2339,12 +4039,19 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
               <option value="png">PNG sequence · ZIP</option>
             </select>
           </label>
+          <label v-if="exportFormat === 'mp4'">
+            MP4 color
+            <select v-model="mp4Chroma">
+              <option value="compatible">Compatible · 4:2:0</option>
+              <option value="high">High color · ProRes MOV</option>
+            </select>
+          </label>
           <label>
             Width
             <input
               v-model.number="exportWidth"
               type="number"
-              min="320"
+              :min="minExportDimension"
               max="3840"
               step="1"
               @change="updateExportWidth"
@@ -2355,7 +4062,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             <input
               v-model.number="exportHeight"
               type="number"
-              min="180"
+              :min="minExportDimension"
               max="3840"
               step="1"
               @change="updateExportHeight"
@@ -2383,26 +4090,42 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           <span>{{ totalDuration.toFixed(2) }}s at {{ exportFps }} fps</span>
         </div>
 
+        <PresetControls
+          class="export-preset-control"
+          :filename-prefix="exportPrefix"
+          :create-preset="createPresetPayload"
+          @import="importPreset"
+          @error="showPresetError"
+        />
+
         <button
           type="button"
-          class="render-button"
+          class="button button--accent button--block render-button render-progress-button"
+          :class="{ 'is-rendering': isExporting }"
           :disabled="isExporting"
+          :style="isExporting
+            ? { '--render-progress': `${Math.max(0, Math.min(1, exportProgress)) * 100}%` }
+            : undefined"
+          aria-live="polite"
           @click="renderSequence"
         >
-          {{
-            isExporting
-              ? `${exportStatus} · ${Math.round(exportProgress * 100)}%`
-              : exportFormat === 'mp4'
-                ? 'Render MP4'
-                : 'Render PNG sequence'
-          }}
+          <span>
+            {{
+              isExporting
+                ? exportStatus
+                : exportFormat === 'mp4'
+                  ? mp4Chroma === 'high' ? 'Render MOV' : 'Render MP4'
+                  : 'Render PNG sequence'
+            }}
+          </span>
         </button>
-        <progress v-if="isExporting" :value="exportProgress" max="1" />
         <p v-if="exportError" class="export-error">{{ exportError }}</p>
         <p class="export-note">
           {{
             exportFormat === 'mp4'
-              ? 'Frames are converted to H.264 MP4 by the local server. FFmpeg is required on the deployment host.'
+              ? mp4Chroma === 'high'
+                ? 'Frames are converted to ProRes MOV for high-color QuickTime playback. FFmpeg is required on the deployment host.'
+                : 'Frames are converted to H.264 MP4 by the local server. FFmpeg is required on the deployment host.'
               : 'Downloads a ZIP containing numbered PNG frames.'
           }}
           Large resolutions and frame rates use significant memory.
