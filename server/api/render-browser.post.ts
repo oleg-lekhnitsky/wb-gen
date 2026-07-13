@@ -608,16 +608,7 @@ export default defineEventHandler(async event => {
       })
     }
 
-    await runFfmpeg([
-      '-hide_banner', '-loglevel', 'error',
-      '-framerate', String(fps),
-      '-i', join(sourceDirectory, `frame-%0${digits}d.png`),
-      '-vf',
-      `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height}`,
-      '-start_number', '1',
-      '-y',
-      join(outputDirectory, `frame-%0${digits}d.png`)
-    ])
+    const resizeFilter = `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height}`
 
     if (settings.exportFormat === 'mp4') {
       const scaleFilter = [
@@ -631,11 +622,11 @@ export default defineEventHandler(async event => {
       await runFfmpeg([
         '-hide_banner', '-loglevel', 'error',
         '-framerate', String(fps),
-        '-i', join(outputDirectory, `frame-%0${digits}d.png`),
-        '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
+        '-i', join(sourceDirectory, `frame-%0${digits}d.png`),
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
         '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited',
         '-pix_fmt', 'yuv420p',
-        '-vf', `${scaleFilter},format=yuv420p`,
+        '-vf', `${resizeFilter},${scaleFilter},format=yuv420p`,
         '-color_primaries', 'bt709',
         '-color_trc', 'bt709',
         '-colorspace', 'bt709',
@@ -647,6 +638,16 @@ export default defineEventHandler(async event => {
       responseStream.write(createRenderStreamFrame(renderStreamResult, video))
       return
     }
+
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error',
+      '-framerate', String(fps),
+      '-i', join(sourceDirectory, `frame-%0${digits}d.png`),
+      '-vf', resizeFilter,
+      '-start_number', '1',
+      '-y',
+      join(outputDirectory, `frame-%0${digits}d.png`)
+    ])
 
     const names = (await readdir(outputDirectory)).filter(name => name.endsWith('.png')).sort()
     const files = await Promise.all(names.map(async name => ({

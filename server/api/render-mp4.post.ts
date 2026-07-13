@@ -58,7 +58,7 @@ export default defineEventHandler(async event => {
       '-framerate', String(fps),
       '-i', join(directory, `frame-%0${digits}d.png`),
       '-c:v', 'libx264',
-      '-preset', 'medium',
+      '-preset', 'fast',
       '-crf', '18',
       '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited',
       '-pix_fmt', 'yuv420p',
