@@ -220,6 +220,7 @@ export default defineEventHandler(async event => {
   const labelPart = parts?.find(part => part.name === 'groupLabel')
   const activeIndexPart = parts?.find(part => part.name === 'activeIndex')
   const renderScalePart = parts?.find(part => part.name === 'renderScale')
+  const responseModePart = parts?.find(part => part.name === 'responseMode')
 
   if (!settingsPart || !presetsPart) {
     throw createError({ statusCode: 400, statusMessage: 'Missing aspect render settings.' })
@@ -238,6 +239,10 @@ export default defineEventHandler(async event => {
   }
 
   const renderScale = clampRenderScale(renderScalePart?.data.toString())
+  const responseMode = responseModePart?.data.toString() === 'png' ? 'png' : 'zip'
+  if (responseMode === 'png' && presets.length !== 1) {
+    throw createError({ statusCode: 400, statusMessage: 'A single preset is required for PNG output.' })
+  }
   const totalPixels = presets.reduce(
     (sum, preset) =>
       sum
@@ -377,6 +382,16 @@ export default defineEventHandler(async event => {
       } finally {
         await page.close()
       }
+    }
+
+    if (responseMode === 'png') {
+      const file = files[0]
+      if (!file) {
+        throw createError({ statusCode: 500, statusMessage: 'The PNG screenshot was not created.' })
+      }
+      setHeader(event, 'Content-Type', 'image/png')
+      setHeader(event, 'Content-Disposition', `inline; filename="${file.name}"`)
+      return Buffer.from(file.data)
     }
 
     setHeader(event, 'Content-Type', 'application/zip')

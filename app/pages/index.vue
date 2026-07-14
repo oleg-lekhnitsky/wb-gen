@@ -4,7 +4,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AnimatedSlideCopy from '~/components/AnimatedSlideCopy.vue'
 import AspectPreviewGrid from '~/components/AspectPreviewGrid.vue'
 import BackgroundSelector from '~/components/BackgroundSelector.vue'
+import CopySlidePng from '~/components/CopySlidePng.vue'
 import DraggableBackground from '~/components/DraggableBackground.vue'
+import LogoControls from '~/components/LogoControls.vue'
 import PresetControls from '~/components/PresetControls.vue'
 import SlideEditActions from '~/components/SlideEditActions.vue'
 import SlideSelector from '~/components/SlideSelector.vue'
@@ -418,7 +420,7 @@ const textLineTransition = ref(false)
 const swapVerticalPanels = ref(false)
 const swapHorizontalPanels = ref(false)
 const swapUltraNarrowPanels = ref(false)
-const loopSlides = ref(true)
+const loopSlides = ref(false)
 const showPackshotOnFinalSlide = ref(false)
 const packshotWidth = ref(28)
 const packshotRenderer = ref<PackshotRenderer>('canvas')
@@ -569,6 +571,8 @@ const secondHandle = computed(() => ({
 const selectedSlide = computed(
   () => panelSlides.value[selectedPanel.value][selectedIndex.value]
 )
+const copySlideStatus = ref<'idle' | 'copying' | 'copied' | 'error'>('idle')
+let copySlideStatusTimer: ReturnType<typeof setTimeout> | undefined
 
 function rangeStyle(value: number, min: number, max: number) {
   const progress = ((value - min) / (max - min)) * 100
@@ -1207,6 +1211,33 @@ function applySelectedTextToAspectRatios() {
     aspectSlideSettings.value[key] ||= captureAspectSlideSettings()
     const fields = aspectSlideSettings.value[key]?.[selectedPanel.value]?.[selectedIndex.value]
     if (fields) Object.assign(fields, textFields)
+  }
+
+  saveSettings()
+}
+
+function applySelectedLogoToAspectRatios() {
+  const slide = selectedSlide.value
+  if (!slide) return
+
+  const logoFields: Pick<AspectSlideFields, 'logo' | 'logoWidth' | 'logoHeight'> = {
+    logo: slide.logo,
+    logoWidth: slide.logoWidth,
+    logoHeight: slide.logoHeight
+  }
+
+  aspectSlideSettings.value[getAspectKey()] = captureAspectSlideSettings()
+
+  const aspectKeys = new Set([
+    ...Object.keys(aspectSlideSettings.value),
+    ...quickAspectPresets.map(preset => getAspectKey(preset.width, preset.height)),
+    ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height))
+  ])
+
+  for (const key of aspectKeys) {
+    aspectSlideSettings.value[key] ||= captureAspectSlideSettings()
+    const fields = aspectSlideSettings.value[key]?.[selectedPanel.value]?.[selectedIndex.value]
+    if (fields) Object.assign(fields, logoFields)
   }
 
   saveSettings()
@@ -2570,6 +2601,74 @@ async function renderAspectGroupImagesOnServer(
   downloadBlob(zip, `${groupName}_${getRenderDateStamp()}.zip`)
 }
 
+async function requestCurrentSlidePng() {
+  storeCurrentAspectSettings()
+  const settings: PersistedSettings = {
+    ...getCurrentSettings(),
+    selectedIndex: activeIndex.value,
+    exportFormat: 'png'
+  }
+  const preset: AspectPreset = {
+    label: activeAspectLabel.value,
+    width: aspectWidth.value,
+    height: aspectHeight.value,
+    exportWidth: exportWidth.value,
+    exportHeight: exportHeight.value
+  }
+  const formData = new FormData()
+  formData.set(
+    'settings',
+    new Blob([JSON.stringify(settings)], { type: 'application/json' }),
+    'settings.json'
+  )
+  formData.set(
+    'presets',
+    new Blob([JSON.stringify([preset])], { type: 'application/json' }),
+    'presets.json'
+  )
+  formData.set('groupLabel', activeAspectLabel.value)
+  formData.set('activeIndex', String(activeIndex.value))
+  formData.set('renderScale', '1')
+  formData.set('responseMode', 'png')
+
+  const response = await fetchRenderEndpoint('/api/render-aspect-group', formData)
+  if (!response.ok) {
+    const message = await response.text()
+    throw new Error(message || 'Current slide render failed.')
+  }
+
+  const blob = await response.blob()
+  return blob.type === 'image/png'
+    ? blob
+    : new Blob([blob], { type: 'image/png' })
+}
+
+async function copyCurrentSlideAsPng() {
+  if (copySlideStatus.value === 'copying') return
+
+  clearTimeout(copySlideStatusTimer)
+  copySlideStatus.value = 'copying'
+
+  try {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+      throw new Error('PNG clipboard copying is not supported by this browser.')
+    }
+
+    const png = requestCurrentSlidePng()
+    await navigator.clipboard.write([
+      new ClipboardItem({ 'image/png': png })
+    ])
+    copySlideStatus.value = 'copied'
+  } catch (error) {
+    console.error('Unable to copy current slide PNG.', error)
+    copySlideStatus.value = 'error'
+  }
+
+  copySlideStatusTimer = setTimeout(() => {
+    copySlideStatus.value = 'idle'
+  }, 3000)
+}
+
 async function renderAspectGroupImages(
   presets: AspectPreset[],
   groupLabel: string,
@@ -3430,6 +3529,7 @@ onBeforeUnmount(() => {
   clearTimeout(saveTimer)
   clearTimeout(undoSnapshotTimer)
   clearTimeout(packshotStartTimer)
+  clearTimeout(copySlideStatusTimer)
   if (packshotTransitionFrame) cancelAnimationFrame(packshotTransitionFrame)
   stopCurveDrag()
   packshotAnimation?.destroy()
@@ -3733,6 +3833,11 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         >
           {{ panelSwapButtonLabel }}
         </button>
+
+        <CopySlidePng
+          :status="copySlideStatus"
+          @copy="copyCurrentSlideAsPng"
+        />
       </div>
 
       <template v-if="selectedSlide">
@@ -3788,49 +3893,16 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           >
         </div>
 
-        <div class="control-section control-field">
-          <h2>Logo</h2>
-          <input
-            v-if="!isLogoImage(selectedSlide.logo)"
-            id="logo-text"
-            v-model="selectedSlide.logo"
-            placeholder="Logo text"
-          >
-          <div v-else class="logo-upload-status">
-            {{ selectedSlide.logo === defaultLogo ? 'Default logo' : 'Uploaded logo' }}
-          </div>
-          <div class="asset-control">
-            <button
-              type="button"
-              class="button button--outline upload-button"
-              @click="useDefaultLogo"
-            >
-              Default logo
-            </button>
-            <label
-              class="button button--outline upload-button"
-              for="logo"
-              @pointerdown="rememberControlsScroll"
-            >
-              Upload logo
-            </label>
-            <button
-              v-if="selectedSlide.logo"
-              type="button"
-              class="button button--secondary clear-button"
-              @click="clearAsset('logo')"
-            >
-              Clear
-            </button>
-          </div>
-          <input
-            id="logo"
-            class="visually-hidden"
-            type="file"
-            accept="image/*"
-            @change="handleAssetUpload($event, 'logo')"
-          >
-        </div>
+        <LogoControls
+          v-model:logo="selectedSlide.logo"
+          :is-logo-image="isLogoImage(selectedSlide.logo)"
+          :is-default-logo="selectedSlide.logo === defaultLogo"
+          @apply-to-aspects="applySelectedLogoToAspectRatios"
+          @use-default="useDefaultLogo"
+          @remember-scroll="rememberControlsScroll"
+          @upload="handleAssetUpload($event, 'logo')"
+          @clear="clearAsset('logo')"
+        />
       </template>
 
       <section class="control-section packshot-control">

@@ -187,7 +187,7 @@ export default defineEventHandler(async event => {
   const firstPause = Number.isFinite(settings.firstPauseSeconds)
     ? settings.firstPauseSeconds
     : settings.pauseSeconds
-  const loopSlides = settings.loopSlides !== false
+  const loopSlides = settings.loopSlides === true
   const transitionCount = loopSlides ? slideCount : Math.max(0, slideCount - 1)
   const duration =
     firstPause
