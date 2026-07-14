@@ -44,10 +44,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
     >
       <span>
         {{ status === 'copying'
-          ? 'Copying current slide…'
+          ? 'Copying PNG…'
           : status === 'copied'
-            ? 'Current slide copied'
-            : 'Copy current slide as PNG' }}
+            ? 'PNG copied'
+            : 'Copy PNG' }}
       </span>
       <kbd>⌘C</kbd>
     </button>

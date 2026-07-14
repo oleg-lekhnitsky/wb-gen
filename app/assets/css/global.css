@@ -9,6 +9,7 @@
 }
 
 :root {
+  --brand-pink: #ff00ff;
   --radius-s: 4px;
   --controls-bg: #fff;
   --controls-text: #000000;
@@ -66,6 +67,13 @@
   --controls-radius-sm: 10px;
   --controls-radius-md: 12px;
   --controls-radius-lg: 14px;
+  --timeline-text: var(--controls-text);
+  --timeline-text-muted: var(--controls-text-faint);
+  --timeline-track-border: var(--controls-border);
+  --timeline-pause-bg: var(--brand-pink);
+  --timeline-transition-bg: var(--controls-surface-raised);
+  --timeline-progress: var(--controls-accent);
+  --timeline-playhead: var(--controls-text);
   color: #111;
   background: #e9e9e7;
   font-family: "InterVariable", "Inter", Arial, sans-serif;
@@ -790,24 +798,133 @@ button {
   text-align: right;
 }
 
-.slide-progress {
-  display: flex;
-  gap: 7px;
+.slide-timeline {
+  position: relative;
+  width: clamp(190px, 26vw, 200px);
+  min-width: 0;
+  padding: 22px var(--controls-gap-md) var(--controls-gap-md);
+  /* border: 1px solid var(--controls-border); */
+  border-radius: var(--controls-radius-md);
+  /* background: var(--controls-surface-raised); */
+  color: var(--timeline-text);
 }
 
-.slide-progress button {
-  width: 24px;
-  height: 4px;
+.slide-timeline__labels {
+  position: absolute;
+  inset: 6px var(--controls-gap-md) auto;
+  height: 14px;
+  pointer-events: none;
+}
+
+.slide-timeline__labels span {
+  position: absolute;
+  top: 0;
+  color: var(--timeline-text-muted);
+  font-size: var(--controls-font-2xs);
+  font-weight: 600;
+  line-height: 12px;
+  transform: translateX(3px);
+}
+
+.slide-timeline__labels span.is-current {
+  color: var(--timeline-text);
+  font-weight: 700;
+}
+
+.slide-timeline__track {
+  position: relative;
+  height: 8px;
+  overflow: visible;
+}
+
+.slide-timeline__pause,
+.slide-timeline__transition {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+
+.slide-timeline__pause {
+  z-index: 4;
+  min-width: 2px;
   padding: 0;
-  border-radius: 999px;
-  background: rgb(255 255 255 / 28%);
+  border: 0;
+  background: transparent;
   cursor: pointer;
-  transition: width 180ms ease, background 180ms ease;
 }
 
-.slide-progress button.is-current {
-  width: 48px;
-  background: #fff;
+.slide-timeline__transition {
+  z-index: 1;
+}
+
+.slide-timeline__pause::before,
+.slide-timeline__transition::before {
+  position: absolute;
+  inset: 0 1px;
+  border: 1px solid var(--timeline-track-border);
+  border-radius: 999px;
+  content: "";
+  pointer-events: none;
+}
+
+.slide-timeline__pause::before {
+  border-color: var(--timeline-pause-bg);
+  background: var(--timeline-pause-bg);
+}
+
+.slide-timeline__transition::before {
+  border: 0;
+  background: var(--timeline-transition-bg);
+}
+
+.slide-timeline__progress {
+  position: absolute;
+  z-index: 5;
+  bottom: -4px;
+  left: 0;
+  height: 2px;
+  border-radius: 999px 0 0 999px;
+  background: var(--timeline-progress);
+  pointer-events: none;
+}
+
+.slide-timeline__playhead {
+  position: absolute;
+  z-index: 7;
+  top: 50%;
+  width: 2px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--timeline-playhead);
+
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.slide-timeline__seconds {
+  position: relative;
+  height: 10px;
+  margin-top: 8px;
+  color: var(--timeline-text-muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  line-height: 10px;
+  pointer-events: none;
+}
+
+.slide-timeline__seconds span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.slide-timeline__seconds span:first-child {
+  transform: none;
+}
+
+.slide-timeline__seconds span:last-child {
+  transform: translateX(-100%);
 }
 
 .animation-controls {
@@ -1555,10 +1672,17 @@ input[type="checkbox"] {
   gap: var(--controls-gap-sm);
 }
 
+.editor-secondary-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: var(--controls-gap-sm);
+}
+
 .copy-slide-png button {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: var(--controls-gap-sm);
 }
 

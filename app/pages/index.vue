@@ -10,6 +10,7 @@ import LogoControls from '~/components/LogoControls.vue'
 import PresetControls from '~/components/PresetControls.vue'
 import SlideEditActions from '~/components/SlideEditActions.vue'
 import SlideSelector from '~/components/SlideSelector.vue'
+import SlideTimeline from '~/components/SlideTimeline.vue'
 import StageZoomControl from '~/components/StageZoomControl.vue'
 import TextControls from '~/components/TextControls.vue'
 import UndoShortcut from '~/components/UndoShortcut.vue'
@@ -461,7 +462,7 @@ const slideCount = computed(() => panelSlides.value.left.length)
 const transitionDuration = computed(() => transitionSeconds.value * 1000)
 const intervalDuration = computed(
   () => (
-    transitionSeconds.value
+    (leavingIndex.value !== null ? transitionSeconds.value : 0)
     + (activeIndex.value === 0 ? firstPauseSeconds.value : pauseSeconds.value)
   ) * 1000
 )
@@ -3674,11 +3675,15 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
 
         <StageZoomControl v-model="previewZoom" />
 
-        <SlideSelector
+        <SlideTimeline
           :count="slideCount"
           :current-index="activeIndex"
-          variant="progress"
-          aria-label="Slides"
+          :leaving-index="leavingIndex"
+          :is-playing="isPlaying"
+          :first-pause-seconds="firstPauseSeconds"
+          :pause-seconds="pauseSeconds"
+          :transition-seconds="transitionSeconds"
+          :loop="loopSlides"
           @select="selectSlide"
         />
       </div>
@@ -3826,18 +3831,20 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           @remove="removeSelectedSlide"
         />
 
-        <button
-          type="button"
-          class="button button--outline button--compact button--block swap-panels-button"
-          @click="togglePanelSwap"
-        >
-          {{ panelSwapButtonLabel }}
-        </button>
+        <div class="editor-secondary-actions">
+          <button
+            type="button"
+            class="button button--outline button--compact button--block swap-panels-button"
+            @click="togglePanelSwap"
+          >
+            {{ panelSwapButtonLabel }}
+          </button>
 
-        <CopySlidePng
-          :status="copySlideStatus"
-          @copy="copyCurrentSlideAsPng"
-        />
+          <CopySlidePng
+            :status="copySlideStatus"
+            @copy="copyCurrentSlideAsPng"
+          />
+        </div>
       </div>
 
       <template v-if="selectedSlide">
