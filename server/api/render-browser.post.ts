@@ -1,14 +1,19 @@
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { copyFile, link, mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { chromium } from 'playwright'
 
+type RenderSlide = {
+  backgroundImage?: unknown
+  logo?: unknown
+}
+
 type RenderSettings = {
   panelSlides: {
-    left: unknown[]
-    right: unknown[]
+    left: RenderSlide[]
+    right: RenderSlide[]
   }
   transitionSeconds: number
   pauseSeconds: number
@@ -59,6 +64,37 @@ function createRenderStreamFrame(type: number, data: Uint8Array = new Uint8Array
   return data.byteLength
     ? Buffer.concat([header, Buffer.from(data)])
     : header
+}
+
+function isKnownStaticImageSource(value: unknown, allowText = false) {
+  if (typeof value !== 'string' || value.length === 0) return true
+  const source = value.trim().toLowerCase()
+  if (!source) return true
+  if (allowText && !source.startsWith('data:') && !source.includes('/') && !source.includes('.')) {
+    return true
+  }
+  if (/^data:image\/(?:png|jpe?g);/.test(source)) return true
+  if (source.startsWith('data:') || source.startsWith('blob:')) return false
+  return /\.(?:png|jpe?g|svg)(?:[?#].*)?$/.test(source)
+}
+
+function slideHasOnlyStaticMedia(settings: RenderSettings, index: number) {
+  return (['left', 'right'] as const).every(side => {
+    const slide = settings.panelSlides[side][index]
+    return Boolean(
+      slide
+      && isKnownStaticImageSource(slide.backgroundImage)
+      && isKnownStaticImageSource(slide.logo, true)
+    )
+  })
+}
+
+async function reuseFrame(source: string, destination: string) {
+  try {
+    await link(source, destination)
+  } catch {
+    await copyFile(source, destination)
+  }
 }
 
 function runFfmpeg(args: string[], onFrame?: (frame: number) => void) {
@@ -357,6 +393,10 @@ export default defineEventHandler(async event => {
     const frameCaptureStartedAt = performance.now()
     let frameSetupMilliseconds = 0
     let screenshotMilliseconds = 0
+    let capturedFrameCount = 0
+    let reusedFrameCount = 0
+    let reusableFrameKey = ''
+    let reusableFramePath = ''
     for (let frame = 0; frame < frameCount; frame += 1) {
       const time = Math.min(frame / fps, duration)
       let currentIndex = 0
@@ -401,6 +441,33 @@ export default defineEventHandler(async event => {
       const packshotProgress = settings.packshotPlayback === 'loop'
         ? packshotElapsed / packshotDuration
         : Math.min(1, Math.max(0, packshotElapsed / packshotDuration))
+      const framePath = join(sourceDirectory, `frame-${String(frame + 1).padStart(digits, '0')}.png`)
+      const packshotShown = Boolean(settings.showPackshotOnFinalSlide) && packshotVisible
+      const packshotMoving = packshotShown && (
+        settings.packshotPlayback === 'loop'
+        || packshotProgress < 1
+      )
+      const canReuseStaticFrame = (
+        !transition
+        && slideHasOnlyStaticMedia(settings, currentIndex)
+        && !packshotMoving
+      )
+      const staticFrameKey = canReuseStaticFrame
+        ? `${currentIndex}:${packshotShown ? 'packshot-complete' : 'packshot-hidden'}`
+        : ''
+
+      if (staticFrameKey && staticFrameKey === reusableFrameKey && reusableFramePath) {
+        await reuseFrame(reusableFramePath, framePath)
+        reusedFrameCount += 1
+        const completedFrames = frame + 1
+        if (completedFrames % renderProgressStep === 0 || completedFrames === frameCount) {
+          sendProgress(
+            0.05 + completedFrames / frameCount * 0.8,
+            `Reusing static pause frame ${completedFrames} of ${frameCount}`
+          )
+        }
+        continue
+      }
 
       const frameSetupStartedAt = performance.now()
       await page.evaluate(
@@ -643,10 +710,18 @@ export default defineEventHandler(async event => {
       frameSetupMilliseconds += performance.now() - frameSetupStartedAt
       const screenshotStartedAt = performance.now()
       await stage.screenshot({
-        path: join(sourceDirectory, `frame-${String(frame + 1).padStart(digits, '0')}.png`),
+        path: framePath,
         animations: 'disabled'
       })
       screenshotMilliseconds += performance.now() - screenshotStartedAt
+      capturedFrameCount += 1
+      if (staticFrameKey) {
+        reusableFrameKey = staticFrameKey
+        reusableFramePath = framePath
+      } else {
+        reusableFrameKey = ''
+        reusableFramePath = ''
+      }
       const completedFrames = frame + 1
       if (completedFrames % renderProgressStep === 0 || completedFrames === frameCount) {
         sendProgress(
@@ -658,6 +733,8 @@ export default defineEventHandler(async event => {
     const frameCaptureMilliseconds = performance.now() - frameCaptureStartedAt
     console.info('[render-browser] frame capture complete', {
       frames: frameCount,
+      capturedFrames: capturedFrameCount,
+      reusedFrames: reusedFrameCount,
       width,
       height,
       browserStartMs: Math.round(browserReadyAt - renderStartedAt),
@@ -665,7 +742,10 @@ export default defineEventHandler(async event => {
       frameSetupMs: Math.round(frameSetupMilliseconds),
       screenshotMs: Math.round(screenshotMilliseconds),
       frameCaptureMs: Math.round(frameCaptureMilliseconds),
-      averageFrameMs: Math.round(frameCaptureMilliseconds / frameCount)
+      averageFrameMs: Math.round(frameCaptureMilliseconds / frameCount),
+      averageCapturedFrameMs: Math.round(
+        (frameSetupMilliseconds + screenshotMilliseconds) / Math.max(1, capturedFrameCount)
+      )
     })
 
     const resizeFilter = `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height}`
