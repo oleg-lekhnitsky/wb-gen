@@ -8,6 +8,8 @@ import { chromium } from 'playwright'
 type RenderSlide = {
   backgroundImage?: unknown
   logo?: unknown
+  ctaText?: unknown
+  ctaPulse?: unknown
 }
 
 type RenderSettings = {
@@ -85,6 +87,7 @@ function slideHasOnlyStaticMedia(settings: RenderSettings, index: number) {
       slide
       && isKnownStaticImageSource(slide.backgroundImage)
       && isKnownStaticImageSource(slide.logo, true)
+      && !(slide.ctaPulse === true && typeof slide.ctaText === 'string' && slide.ctaText.trim())
     )
   })
 }
@@ -602,6 +605,17 @@ export default defineEventHandler(async event => {
                     : `translateY(${enterOffset}em)`
             })
           }
+          const setCtaTransition = (
+            slide: HTMLElement | undefined,
+            opacity: number,
+            translateY: number
+          ) => {
+            const cta = slide?.querySelector<HTMLElement>('.slide-cta')
+            if (!cta) return
+            cta.style.transition = 'none'
+            cta.style.opacity = String(clamp(opacity))
+            cta.style.transform = `translateY(${translateY}em)`
+          }
           panels.forEach((panel, sideIndex) => {
             panel?.querySelectorAll<HTMLElement>('.slot-slide').forEach((slide, index) => {
               slide.style.opacity = '0'
@@ -610,6 +624,7 @@ export default defineEventHandler(async event => {
               slide.classList.toggle('is-active', !transition && index === currentIndex)
               slide.classList.toggle('is-leaving', transition && index === currentIndex)
               setCopyUnits(slide, 'hidden')
+              setCtaTransition(slide, 0, 1.25)
             })
             const current = panel?.querySelectorAll<HTMLElement>('.slot-slide')[currentIndex]
             const next = panel?.querySelectorAll<HTMLElement>('.slot-slide')[nextIndex]
@@ -634,6 +649,7 @@ export default defineEventHandler(async event => {
                 currentIndex > 0 ? 'entering' : 'visible',
                 currentEntryProgress
               )
+              setCtaTransition(current, 1, 0)
             } else {
               if (next) {
                 next.classList.add('is-active')
@@ -644,6 +660,7 @@ export default defineEventHandler(async event => {
                   ? `scaleX(${progress})`
                   : `scaleY(${progress})`
                 setCopyUnits(next, 'entering')
+                setCtaTransition(next, progress, (1 - progress) * 1.25)
               }
               if (current) {
                 current.classList.add('is-leaving')
@@ -654,8 +671,16 @@ export default defineEventHandler(async event => {
                   ? `scaleX(${1 - progress})`
                   : `scaleY(${1 - progress})`
                 setCopyUnits(current, 'leaving')
+                setCtaTransition(current, 1 - progress, -progress * 1.25)
               }
             }
+          })
+
+          const pulsePhase = (time % 1.8) / 1.8
+          const pulseAmount = Math.sin(Math.PI * pulsePhase) ** 2
+          root?.querySelectorAll<HTMLElement>('.slide-cta.is-pulsing').forEach((cta) => {
+            cta.style.animation = 'none'
+            cta.style.scale = String(1 + pulseAmount * 0.04)
           })
 
           const finalIndex = panels[0]?.querySelectorAll('.slot-slide').length

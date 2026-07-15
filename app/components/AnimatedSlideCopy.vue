@@ -1,19 +1,31 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+type HeadingHighlightPreset = 'white-pink' | 'purple-white'
+type HeadingHighlight = {
+  start: number
+  end: number
+  preset: HeadingHighlightPreset
+}
+
 const props = withDefaults(defineProps<{
   heading: string
+  headingHighlights?: HeadingHighlight[]
   headingSize: number
   subheading: string
   subheadingSize: number
   animate?: boolean
 }>(), {
-  animate: false
+  animate: false,
+  headingHighlights: () => []
 })
 
 type CopyWord = {
   text: string
+  start: number
+  end: number
   breakAfter: boolean
+  highlight?: HeadingHighlightPreset
 }
 
 const splitLines = (value: string): string[] => value
@@ -29,9 +41,16 @@ const splitWords = (value: string): CopyWord[] => {
   while ((match = pattern.exec(value))) {
     const text = match[1]
     if (!text) continue
+    const start = match.index
+    const end = start + text.length
     words.push({
       text,
-      breakAfter: Boolean(match[2])
+      start,
+      end,
+      breakAfter: Boolean(match[2]),
+      highlight: props.headingHighlights.find(highlight => (
+        highlight.start < end && highlight.end > start
+      ))?.preset
     })
   }
 
@@ -72,7 +91,10 @@ const subheadingDelayOffset = computed(() => props.heading ? headingWords.value.
         v-for="(word, index) in headingWords"
         :key="`heading-${index}`"
         class="animated-copy-word"
-        :class="{ 'has-word-gap': !word.breakAfter }"
+        :class="[
+          { 'has-word-gap': !word.breakAfter },
+          word.highlight ? `has-heading-highlight--${word.highlight}` : ''
+        ]"
         :style="{ '--word-delay': `${index * wordStaggerMs}ms` }"
       >{{ word.text }}<br v-if="word.breakAfter"></span>
     </h2>

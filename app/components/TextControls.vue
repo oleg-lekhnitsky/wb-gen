@@ -1,6 +1,15 @@
 <script setup lang="ts">
+import HeadingHighlightControl from '~/components/HeadingHighlightControl.vue'
+
+type HeadingHighlight = {
+  start: number
+  end: number
+  preset: 'white-pink' | 'purple-white'
+}
+
 defineProps<{
   heading: string
+  headingHighlights?: HeadingHighlight[]
   headingSize: number
   subheading: string
   subheadingSize: number
@@ -15,6 +24,7 @@ defineProps<{
 
 const emit = defineEmits<{
   'update:heading': [value: string]
+  'update:headingHighlights': [value: HeadingHighlight[]]
   'update:headingSize': [value: number]
   'update:subheading': [value: string]
   'update:subheadingSize': [value: number]
@@ -49,15 +59,12 @@ function rangeStyle(value: number | undefined, min: number, max: number) {
       </button>
     </div>
 
-    <div class="control-field">
-      <label for="heading">Heading <span>optional</span></label>
-      <input
-        id="heading"
-        :value="heading"
-        placeholder="Add heading"
-        @input="emit('update:heading', ($event.target as HTMLInputElement).value)"
-      >
-    </div>
+    <HeadingHighlightControl
+      :heading="heading"
+      :highlights="headingHighlights"
+      @update:heading="emit('update:heading', $event)"
+      @update:highlights="emit('update:headingHighlights', $event)"
+    />
 
     <div class="control-field">
       <label for="subheading">Subheading <span>optional</span></label>

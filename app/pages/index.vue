@@ -5,11 +5,13 @@ import AnimatedSlideCopy from '~/components/AnimatedSlideCopy.vue'
 import AspectPreviewGrid from '~/components/AspectPreviewGrid.vue'
 import BackgroundSelector from '~/components/BackgroundSelector.vue'
 import CopySlidePng from '~/components/CopySlidePng.vue'
+import CtaControls from '~/components/CtaControls.vue'
 import DraggableBackground from '~/components/DraggableBackground.vue'
 import LogoControls from '~/components/LogoControls.vue'
 import PresetControls from '~/components/PresetControls.vue'
 import SlideEditActions from '~/components/SlideEditActions.vue'
 import SlideSelector from '~/components/SlideSelector.vue'
+import SlideCta from '~/components/SlideCta.vue'
 import SlideTimeline from '~/components/SlideTimeline.vue'
 import StageZoomControl from '~/components/StageZoomControl.vue'
 import TextControls from '~/components/TextControls.vue'
@@ -17,6 +19,12 @@ import UndoShortcut from '~/components/UndoShortcut.vue'
 import packshotAnimationData from '~/assets/packshot.json'
 import defaultLogo from '~/assets/wb taxi.svg'
 import defaultLogoSvg from '~/assets/wb taxi.svg?raw'
+
+type HeadingHighlight = {
+  start: number
+  end: number
+  preset: 'white-pink' | 'purple-white'
+}
 
 type Slide = {
   backgroundImage: string
@@ -27,10 +35,17 @@ type Slide = {
   backgroundPreset: 'solid' | 'split' | 'checker'
   splitAngle: number
   checkerCells: number
+  bottomFade?: boolean
   heading: string
+  headingHighlights?: HeadingHighlight[]
   headingSize: number
   subheading: string
   subheadingSize: number
+  ctaText?: string
+  ctaSize?: number
+  ctaPulse?: boolean
+  ctaAlign?: 'left' | 'right'
+  ctaBottomMargin?: boolean
   logo: string
   logoWidth: number
   logoHeight: number
@@ -45,9 +60,15 @@ type PanelSide = 'left' | 'right'
 type AspectSlideFields = Pick<
   Slide,
   | 'heading'
+  | 'headingHighlights'
   | 'headingSize'
   | 'subheading'
   | 'subheadingSize'
+  | 'ctaText'
+  | 'ctaSize'
+  | 'ctaPulse'
+  | 'ctaAlign'
+  | 'ctaBottomMargin'
   | 'logo'
   | 'logoWidth'
   | 'logoHeight'
@@ -59,6 +80,7 @@ type AspectSlideFields = Pick<
   | 'backgroundImageX'
   | 'backgroundImageY'
   | 'backgroundImageScale'
+  | 'bottomFade'
 > & Partial<Pick<Slide, 'backgroundColor' | 'backgroundPreset' | 'splitAngle' | 'checkerCells'>>
 type AspectSlideSettings = Record<PanelSide, AspectSlideFields[]>
 type PackshotRenderer = 'canvas' | 'svg'
@@ -459,6 +481,12 @@ const undoHistory: string[] = []
 const maxUndoHistory = 30
 
 const slideCount = computed(() => panelSlides.value.left.length)
+const hasPulsingCta = computed(() => panelSides.some(side => (
+  panelSlides.value[side].some(slide => Boolean(slide.ctaText && slide.ctaPulse))
+)))
+const hasCta = computed(() => panelSides.some(side => (
+  panelSlides.value[side].some(slide => Boolean(slide.ctaText))
+)))
 const transitionDuration = computed(() => transitionSeconds.value * 1000)
 const intervalDuration = computed(
   () => (
@@ -633,16 +661,54 @@ function normalizePackshotWidth(value: number) {
   return Math.max(5, Math.min(100, Math.round(Number.isFinite(value) ? value : 28)))
 }
 
+function normalizeHeadingHighlights(value: unknown, heading: string): HeadingHighlight[] {
+  if (!Array.isArray(value)) return []
+
+  return value.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== 'object') return []
+    const highlight = candidate as Partial<HeadingHighlight>
+    if (
+      typeof highlight.start !== 'number'
+      || typeof highlight.end !== 'number'
+      || (highlight.preset !== 'white-pink' && highlight.preset !== 'purple-white')
+    ) return []
+
+    const start = Math.max(0, Math.min(heading.length, Math.round(highlight.start)))
+    const end = Math.max(start, Math.min(heading.length, Math.round(highlight.end)))
+    return end > start ? [{ start, end, preset: highlight.preset }] : []
+  })
+}
+
+function isValidHeadingHighlights(value: unknown) {
+  return value === undefined || (
+    Array.isArray(value)
+    && value.every(candidate => (
+      candidate
+      && typeof candidate === 'object'
+      && typeof candidate.start === 'number'
+      && typeof candidate.end === 'number'
+      && (candidate.preset === 'white-pink' || candidate.preset === 'purple-white')
+    ))
+  )
+}
+
 function getAspectSlideFields(slide: Slide): AspectSlideFields {
   return {
     backgroundColor: slide.backgroundColor,
     backgroundPreset: slide.backgroundPreset,
     splitAngle: slide.splitAngle,
     checkerCells: normalizeCheckerCells(slide.checkerCells),
+    bottomFade: slide.bottomFade ?? false,
     heading: slide.heading,
+    headingHighlights: normalizeHeadingHighlights(slide.headingHighlights, slide.heading),
     headingSize: slide.headingSize,
     subheading: slide.subheading,
     subheadingSize: slide.subheadingSize,
+    ctaText: slide.ctaText || '',
+    ctaSize: slide.ctaSize ?? 100,
+    ctaPulse: slide.ctaPulse ?? false,
+    ctaAlign: slide.ctaAlign === 'left' ? 'left' : 'right',
+    ctaBottomMargin: slide.ctaBottomMargin ?? false,
     logo: slide.logo,
     logoWidth: slide.logoWidth,
     logoHeight: slide.logoHeight,
@@ -1155,12 +1221,13 @@ function applySelectedBackgroundToAspectRatios() {
 
   const backgroundFields: Pick<
     AspectSlideFields,
-    'backgroundColor' | 'backgroundPreset' | 'splitAngle' | 'checkerCells'
+    'backgroundColor' | 'backgroundPreset' | 'splitAngle' | 'checkerCells' | 'bottomFade'
   > = {
     backgroundColor: slide.backgroundColor,
     backgroundPreset: normalizeBackgroundPreset(slide.backgroundPreset),
     splitAngle: normalizeSplitAngle(slide.splitAngle),
-    checkerCells: normalizeCheckerCells(slide.checkerCells)
+    checkerCells: normalizeCheckerCells(slide.checkerCells),
+    bottomFade: slide.bottomFade ?? false
   }
 
   aspectSlideSettings.value[getAspectKey()] = captureAspectSlideSettings()
@@ -1180,6 +1247,7 @@ function applySelectedTextToAspectRatios() {
   const textFields: Pick<
     AspectSlideFields,
     | 'heading'
+    | 'headingHighlights'
     | 'headingSize'
     | 'subheading'
     | 'subheadingSize'
@@ -1190,6 +1258,7 @@ function applySelectedTextToAspectRatios() {
     | 'legalShadowOpacity'
   > = {
     heading: slide.heading,
+    headingHighlights: normalizeHeadingHighlights(slide.headingHighlights, slide.heading),
     headingSize: slide.headingSize,
     subheading: slide.subheading,
     subheadingSize: slide.subheadingSize,
@@ -1239,6 +1308,38 @@ function applySelectedLogoToAspectRatios() {
     aspectSlideSettings.value[key] ||= captureAspectSlideSettings()
     const fields = aspectSlideSettings.value[key]?.[selectedPanel.value]?.[selectedIndex.value]
     if (fields) Object.assign(fields, logoFields)
+  }
+
+  saveSettings()
+}
+
+function applySelectedCtaToAspectRatios() {
+  const slide = selectedSlide.value
+  if (!slide) return
+
+  const ctaFields: Pick<
+    AspectSlideFields,
+    'ctaText' | 'ctaSize' | 'ctaPulse' | 'ctaAlign' | 'ctaBottomMargin'
+  > = {
+    ctaText: slide.ctaText || '',
+    ctaSize: slide.ctaSize ?? 100,
+    ctaPulse: slide.ctaPulse ?? false,
+    ctaAlign: slide.ctaAlign === 'left' ? 'left' : 'right',
+    ctaBottomMargin: slide.ctaBottomMargin ?? false
+  }
+
+  aspectSlideSettings.value[getAspectKey()] = captureAspectSlideSettings()
+
+  const aspectKeys = new Set([
+    ...Object.keys(aspectSlideSettings.value),
+    ...quickAspectPresets.map(preset => getAspectKey(preset.width, preset.height)),
+    ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height))
+  ])
+
+  for (const key of aspectKeys) {
+    aspectSlideSettings.value[key] ||= captureAspectSlideSettings()
+    const fields = aspectSlideSettings.value[key]?.[selectedPanel.value]?.[selectedIndex.value]
+    if (fields) Object.assign(fields, ctaFields)
   }
 
   saveSettings()
@@ -1988,6 +2089,14 @@ function renderSlideSnapshot(
     if (isVideoSource(slide.backgroundImage)) {
       drawVideoBackgroundFromDom(context, element, slide, width, height)
     }
+    if (slide.bottomFade) {
+      const gradient = context.createLinearGradient(0, height * 0.42, 0, height)
+      gradient.addColorStop(0, 'rgb(0 0 0 / 0%)')
+      gradient.addColorStop((0.62 - 0.42) / (1 - 0.42), 'rgb(0 0 0 / 12%)')
+      gradient.addColorStop(1, 'rgb(0 0 0 / 78%)')
+      context.fillStyle = gradient
+      context.fillRect(0, height * 0.42, width, height * 0.58)
+    }
 
     const logoImageElement = clone.querySelector<HTMLImageElement>('.slide-logo img')
     if (logoImageElement) {
@@ -2004,8 +2113,25 @@ function renderSlideSnapshot(
       }
     }
 
+    const ctaElement = clone.querySelector<HTMLElement>('.slide-cta')
+    if (ctaElement) {
+      const rect = ctaElement.getBoundingClientRect()
+      const computed = getComputedStyle(ctaElement)
+      const x = (rect.left - rootRect.left) * scaleX
+      const y = (rect.top - rootRect.top) * scaleY
+      const ctaWidth = rect.width * scaleX
+      const ctaHeight = rect.height * scaleY
+      const radius = Math.min(ctaWidth, ctaHeight) / 2
+      context.save()
+      context.fillStyle = computed.backgroundColor
+      context.beginPath()
+      context.roundRect(x, y, ctaWidth, ctaHeight, radius)
+      context.fill()
+      context.restore()
+    }
+
     const textElements = clone.querySelectorAll<HTMLElement>(
-      '.slide-logo span, .slide-subheading, .slide-copy h2, .slide-legal'
+      '.slide-cta, .slide-logo span, .slide-subheading, .slide-copy h2, .slide-legal'
     )
     for (const textElement of textElements) {
       drawDomText(context, textElement, rootRect, scaleX, scaleY)
@@ -2741,7 +2867,13 @@ async function renderSequence() {
   try {
     storeCurrentAspectSettings()
     const prefix = exportPrefix.value.trim().replace(/[^\w-]+/g, '-') || 'frame'
-    if (exportFormat.value === 'png' && !showPackshotOnFinalSlide.value) {
+    if (
+      exportFormat.value === 'png'
+      && !showPackshotOnFinalSlide.value
+      && !hasPulsingCta.value
+      && !hasCta.value
+      && !textLineTransition.value
+    ) {
       await renderPngSequenceInBrowser(width, height, fps, frameCount, prefix)
       exportProgress.value = 1
       exportStatus.value = 'Complete'
@@ -2871,10 +3003,17 @@ function isValidSlide(value: unknown): value is Slide {
     )
     && (slide.splitAngle === undefined || typeof slide.splitAngle === 'number')
     && (slide.checkerCells === undefined || typeof slide.checkerCells === 'number')
+    && (slide.bottomFade === undefined || typeof slide.bottomFade === 'boolean')
     && typeof slide.heading === 'string'
+    && isValidHeadingHighlights(slide.headingHighlights)
     && (slide.headingSize === undefined || typeof slide.headingSize === 'number')
     && typeof slide.subheading === 'string'
     && (slide.subheadingSize === undefined || typeof slide.subheadingSize === 'number')
+    && (slide.ctaText === undefined || typeof slide.ctaText === 'string')
+    && (slide.ctaSize === undefined || typeof slide.ctaSize === 'number')
+    && (slide.ctaPulse === undefined || typeof slide.ctaPulse === 'boolean')
+    && (slide.ctaAlign === undefined || slide.ctaAlign === 'left' || slide.ctaAlign === 'right')
+    && (slide.ctaBottomMargin === undefined || typeof slide.ctaBottomMargin === 'boolean')
     && typeof slide.logo === 'string'
     && (slide.logoWidth === undefined || typeof slide.logoWidth === 'number')
     && (slide.logoHeight === undefined || typeof slide.logoHeight === 'number')
@@ -2898,6 +3037,8 @@ function normalizeSlide(slide: Slide): Slide {
     backgroundPreset: normalizeBackgroundPreset(slide.backgroundPreset),
     splitAngle: normalizeSplitAngle(slide.splitAngle),
     checkerCells: normalizeCheckerCells(slide.checkerCells),
+    bottomFade: slide.bottomFade ?? false,
+    headingHighlights: normalizeHeadingHighlights(slide.headingHighlights, slide.heading),
     headingSize:
       typeof slide.headingSize === 'number'
         ? Math.max(25, Math.min(200, slide.headingSize))
@@ -2906,6 +3047,14 @@ function normalizeSlide(slide: Slide): Slide {
       typeof slide.subheadingSize === 'number'
         ? Math.max(25, Math.min(200, slide.subheadingSize))
         : 100,
+    ctaText: typeof slide.ctaText === 'string' ? slide.ctaText : '',
+    ctaSize:
+      typeof slide.ctaSize === 'number'
+        ? Math.max(25, Math.min(200, slide.ctaSize))
+        : 100,
+    ctaPulse: slide.ctaPulse ?? false,
+    ctaAlign: slide.ctaAlign === 'left' ? 'left' : 'right',
+    ctaBottomMargin: slide.ctaBottomMargin ?? false,
     logoWidth:
       typeof slide.logoWidth === 'number'
         ? slide.logoWidth > 100
@@ -2943,10 +3092,17 @@ function isValidAspectSlideFields(value: unknown): value is AspectSlideFields {
     )
     && (fields.splitAngle === undefined || typeof fields.splitAngle === 'number')
     && (fields.checkerCells === undefined || typeof fields.checkerCells === 'number')
+    && (fields.bottomFade === undefined || typeof fields.bottomFade === 'boolean')
     && typeof fields.heading === 'string'
+    && isValidHeadingHighlights(fields.headingHighlights)
     && typeof fields.headingSize === 'number'
     && typeof fields.subheading === 'string'
     && (fields.subheadingSize === undefined || typeof fields.subheadingSize === 'number')
+    && (fields.ctaText === undefined || typeof fields.ctaText === 'string')
+    && (fields.ctaSize === undefined || typeof fields.ctaSize === 'number')
+    && (fields.ctaPulse === undefined || typeof fields.ctaPulse === 'boolean')
+    && (fields.ctaAlign === undefined || fields.ctaAlign === 'left' || fields.ctaAlign === 'right')
+    && (fields.ctaBottomMargin === undefined || typeof fields.ctaBottomMargin === 'boolean')
     && typeof fields.logo === 'string'
     && typeof fields.logoWidth === 'number'
     && typeof fields.logoHeight === 'number'
@@ -2981,8 +3137,15 @@ function normalizeAspectSlideFields(fields: AspectSlideFields): AspectSlideField
     ...(typeof fields.checkerCells === 'number'
       ? { checkerCells: normalizeCheckerCells(fields.checkerCells) }
       : {}),
+    bottomFade: fields.bottomFade ?? false,
+    headingHighlights: normalizeHeadingHighlights(fields.headingHighlights, fields.heading),
     headingSize: Math.max(25, Math.min(200, fields.headingSize)),
     subheadingSize: Math.max(25, Math.min(200, fields.subheadingSize ?? 100)),
+    ctaText: typeof fields.ctaText === 'string' ? fields.ctaText : '',
+    ctaSize: Math.max(25, Math.min(200, fields.ctaSize ?? 100)),
+    ctaPulse: fields.ctaPulse ?? false,
+    ctaAlign: fields.ctaAlign === 'left' ? 'left' : 'right',
+    ctaBottomMargin: fields.ctaBottomMargin ?? false,
     logoWidth: Math.max(1, Math.min(100, fields.logoWidth)),
     logoHeight: Math.max(1, Math.min(200, fields.logoHeight)),
     legalSize: Math.max(25, Math.min(400, fields.legalSize ?? 100)),
@@ -3592,7 +3755,8 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
               :class="{
                 'is-active': activeIndex === index,
                 'is-leaving': leavingIndex === index,
-                'has-checker-background': !slide.backgroundImage && slide.backgroundPreset === 'checker'
+                'has-checker-background': !slide.backgroundImage && slide.backgroundPreset === 'checker',
+                'has-bottom-fade': slide.bottomFade
               }"
               :style="getBrandBackgroundStyle(slide)"
               :aria-hidden="activeIndex !== index"
@@ -3613,13 +3777,21 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
                 :class="{ 'has-brand-pink-text': hasWhiteBackground(slide) }"
                 :style="{ '--logo-width': `${slide.logoWidth}%` }"
               >
-              <div
-                class="slide-logo"
-                :class="{
-                  'has-logo-image': isLogoImage(slide.logo),
-                  'is-empty': !slide.logo
-                }"
-              >
+                <SlideCta
+                  :text="slide.ctaText"
+                  :size="slide.ctaSize"
+                  :pulse="slide.ctaPulse"
+                  :align="slide.ctaAlign"
+                  :bottom-margin="slide.ctaBottomMargin"
+                />
+
+                <div
+                  class="slide-logo"
+                  :class="{
+                    'has-logo-image': isLogoImage(slide.logo),
+                    'is-empty': !slide.logo
+                  }"
+                >
                   <img
                     v-if="isLogoImage(slide.logo)"
                     :src="getLogoSource(slide)"
@@ -3634,6 +3806,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
 
                 <AnimatedSlideCopy
                   :heading="slide.heading"
+                  :heading-highlights="slide.headingHighlights"
                   :heading-size="slide.headingSize"
                   :subheading="slide.subheading"
                   :subheading-size="slide.subheadingSize"
@@ -3850,6 +4023,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
       <template v-if="selectedSlide">
         <TextControls
           v-model:heading="selectedSlide.heading"
+          v-model:heading-highlights="selectedSlide.headingHighlights"
           v-model:heading-size="selectedSlide.headingSize"
           v-model:subheading="selectedSlide.subheading"
           v-model:subheading-size="selectedSlide.subheadingSize"
@@ -3898,7 +4072,24 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             accept="image/*,video/*"
             @change="handleAssetUpload($event, 'backgroundImage')"
           >
+
+          <label class="direction-toggle">
+            <span>
+              <strong>Bottom black fade</strong>
+              <small>Darken the bottom edge behind slide content</small>
+            </span>
+            <input v-model="selectedSlide.bottomFade" type="checkbox">
+          </label>
         </div>
+
+        <CtaControls
+          v-model:text="selectedSlide.ctaText"
+          v-model:size="selectedSlide.ctaSize"
+          v-model:pulse="selectedSlide.ctaPulse"
+          v-model:align="selectedSlide.ctaAlign"
+          v-model:bottom-margin="selectedSlide.ctaBottomMargin"
+          @apply-to-aspects="applySelectedCtaToAspectRatios"
+        />
 
         <LogoControls
           v-model:logo="selectedSlide.logo"

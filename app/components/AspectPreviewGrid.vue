@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import AnimatedSlideCopy from '~/components/AnimatedSlideCopy.vue'
 import AspectGroupRenderControl from '~/components/AspectGroupRenderControl.vue'
 import DraggableBackground from '~/components/DraggableBackground.vue'
+import SlideCta from '~/components/SlideCta.vue'
 
 type AspectPreset = {
   label: string
@@ -28,10 +30,21 @@ type PreviewSlide = {
   backgroundPreset: 'solid' | 'split' | 'checker'
   splitAngle: number
   checkerCells: number
+  bottomFade?: boolean
   heading: string
+  headingHighlights?: Array<{
+    start: number
+    end: number
+    preset: 'white-pink' | 'purple-white'
+  }>
   headingSize: number
   subheading: string
   subheadingSize: number
+  ctaText?: string
+  ctaSize?: number
+  ctaPulse?: boolean
+  ctaAlign?: 'left' | 'right'
+  ctaBottomMargin?: boolean
   logo: string
   logoWidth: number
   logoHeight: number
@@ -499,7 +512,10 @@ watch(
               >
                 <span
                   class="slot-slide is-active"
-                  :class="{ 'has-checker-background': !slide.backgroundImage && slide.backgroundPreset === 'checker' }"
+                  :class="{
+                    'has-checker-background': !slide.backgroundImage && slide.backgroundPreset === 'checker',
+                    'has-bottom-fade': slide.bottomFade
+                  }"
                   :style="getSlideStyle(slide, preset)"
                 >
                   <DraggableBackground
@@ -514,6 +530,14 @@ watch(
                     :class="{ 'has-brand-pink-text': hasWhiteBackground(slide) }"
                     :style="{ '--logo-width': `${slide.logoWidth}%` }"
                   >
+                    <SlideCta
+                      :text="slide.ctaText"
+                      :size="slide.ctaSize"
+                      :pulse="slide.ctaPulse"
+                      :align="slide.ctaAlign"
+                      :bottom-margin="slide.ctaBottomMargin"
+                    />
+
                     <span
                       class="slide-logo"
                       :class="{
@@ -533,23 +557,13 @@ watch(
                       <span v-else-if="slide.logo">{{ slide.logo }}</span>
                     </span>
 
-                    <span
-                      class="slide-copy"
-                    >
-                      <span
-                        v-if="slide.subheading"
-                        class="slide-subheading"
-                        :style="{ '--subheading-scale': slide.subheadingSize / 100 }"
-                      >
-                        {{ slide.subheading }}
-                      </span>
-                      <h2
-                        v-if="slide.heading"
-                        :style="{ '--heading-scale': slide.headingSize / 100 }"
-                      >
-                        {{ slide.heading }}
-                      </h2>
-                    </span>
+                    <AnimatedSlideCopy
+                      :heading="slide.heading"
+                      :heading-highlights="slide.headingHighlights"
+                      :heading-size="slide.headingSize"
+                      :subheading="slide.subheading"
+                      :subheading-size="slide.subheadingSize"
+                    />
 
                     <span
                       v-if="slide.legalText"
