@@ -30,6 +30,13 @@ function rememberSelection() {
   selectionEnd.value = input.value?.selectionEnd || selectionStart.value
 }
 
+function isBreakableSpace(character: string) {
+  return character === ' '
+    || character === '\t'
+    || character === '\r'
+    || character === '\n'
+}
+
 function mergeHighlights(highlights: HeadingHighlight[]) {
   const sorted = [...highlights]
     .filter(highlight => highlight.end > highlight.start)
@@ -52,10 +59,10 @@ function selectedWordRange() {
   let start = selectionStart.value
   let end = selectionEnd.value
 
-  while (start < end && /\s/.test(props.heading[start] || '')) start += 1
-  while (end > start && /\s/.test(props.heading[end - 1] || '')) end -= 1
-  while (start > 0 && !/\s/.test(props.heading[start - 1] || '')) start -= 1
-  while (end < props.heading.length && !/\s/.test(props.heading[end] || '')) end += 1
+  while (start < end && isBreakableSpace(props.heading[start] || '')) start += 1
+  while (end > start && isBreakableSpace(props.heading[end - 1] || '')) end -= 1
+  while (start > 0 && !isBreakableSpace(props.heading[start - 1] || '')) start -= 1
+  while (end < props.heading.length && !isBreakableSpace(props.heading[end] || '')) end += 1
 
   return { start, end }
 }

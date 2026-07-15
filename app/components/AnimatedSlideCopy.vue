@@ -35,7 +35,9 @@ const splitLines = (value: string): string[] => value
 
 const splitWords = (value: string): CopyWord[] => {
   const words: CopyWord[] = []
-  const pattern = /(\S+)[ \t]*(\r?\n)?/g
+  // Split only on breakable spaces. NBSP and narrow NBSP stay inside the
+  // animated unit so the browser cannot wrap the connected words apart.
+  const pattern = /([^ \t\r\n]+)[ \t]*(\r?\n)?/g
   let match: RegExpExecArray | null
 
   while ((match = pattern.exec(value))) {
