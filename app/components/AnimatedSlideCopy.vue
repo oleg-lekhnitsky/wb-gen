@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import AutoScaleHeading from '~/components/AutoScaleHeading.vue'
 
 type HeadingHighlightPreset = 'white-pink' | 'purple-white'
 type HeadingHighlight = {
@@ -12,11 +13,13 @@ const props = withDefaults(defineProps<{
   heading: string
   headingHighlights?: HeadingHighlight[]
   headingSize: number
+  headingAutoScale?: boolean
   subheading: string
   subheadingSize: number
   animate?: boolean
 }>(), {
   animate: false,
+  headingAutoScale: false,
   headingHighlights: () => []
 })
 
@@ -24,6 +27,7 @@ type CopyWord = {
   text: string
   start: number
   end: number
+  animationIndex: number
   breakAfter: boolean
   highlight?: HeadingHighlightPreset
 }
@@ -49,6 +53,7 @@ const splitWords = (value: string): CopyWord[] => {
       text,
       start,
       end,
+      animationIndex: words.length,
       breakAfter: Boolean(match[2]),
       highlight: props.headingHighlights.find(highlight => (
         highlight.start < end && highlight.end > start
@@ -84,8 +89,14 @@ const subheadingDelayOffset = computed(() => props.heading ? headingWords.value.
         :style="{ '--word-delay': `${subheadingDelayMs + (subheadingDelayOffset + index) * wordStaggerMs}ms` }"
       >{{ line }}</span>
     </p>
+    <AutoScaleHeading
+      v-if="heading && headingAutoScale"
+      :words="headingWords"
+      :heading-size="headingSize"
+    />
     <h2
       v-if="heading"
+      v-show="!headingAutoScale"
       class="animated-copy-block"
       :style="{ '--heading-scale': headingSize / 100 }"
     >

@@ -35,6 +35,9 @@ type RenderSettings = {
   aspectHeight: number
   reverseDirections: boolean
   textLineTransition?: boolean
+  motionBlur?: boolean
+  motionBlurIntensity?: number
+  contentLayoutPreset?: 'stacked' | 'adaptive-split'
   swapVerticalPanels: boolean
   swapHorizontalPanels?: boolean
   swapUltraNarrowPanels?: boolean
@@ -123,6 +126,23 @@ function runFfmpeg(args: string[], onFrame?: (frame: number) => void) {
       else reject(new Error(output || `FFmpeg exited with code ${code}.`))
     })
   })
+}
+
+function getTemporalMotionBlurFilter(enabled: boolean, fps: number, intensity: number) {
+  const strength = Math.max(0, Math.min(100, intensity)) / 100
+  if (!enabled || strength <= 0) return ''
+
+  const exposureSeconds = 0.025 + strength * 0.105
+  const frameCount = Math.max(2, Math.min(8, Math.round(fps * exposureSeconds) + 1))
+  const trailWeight = 0.12 + strength * 0.65
+  const decay = 0.35 + strength * 0.45
+  const weights = Array.from(
+    { length: frameCount },
+    (_, index) => (
+      index === 0 ? 1 : trailWeight * Math.pow(decay, index - 1)
+    ).toFixed(3)
+  ).join(' ')
+  return `tmix=frames=${frameCount}:weights='${weights}'`
 }
 
 function crc32(data: Uint8Array) {
@@ -275,6 +295,10 @@ export default defineEventHandler(async event => {
       viewport: { width: viewportWidth, height: viewportHeight },
       deviceScaleFactor: 2
     })
+    const captureSettings: RenderSettings = {
+      ...settings,
+      motionBlur: false
+    }
     await page.addInitScript(
       ({ key, value }) => {
         ;(window as Window & { __slotAnimationRenderSettings?: unknown }).__slotAnimationRenderSettings = JSON.parse(value)
@@ -287,7 +311,7 @@ export default defineEventHandler(async event => {
       },
       {
         key: 'slot-animation-generator-settings-v1',
-        value: JSON.stringify(settings)
+        value: JSON.stringify(captureSettings)
       }
     )
     await page.goto(origin, { waitUntil: 'networkidle' })
@@ -487,6 +511,7 @@ export default defineEventHandler(async event => {
           reverseDirections,
           swapPanels,
           textLineTransition,
+          motionBlur,
           showPackshotOnFinalSlide,
           packshotWidth,
           packshotPlayback,
@@ -594,15 +619,18 @@ export default defineEventHandler(async event => {
               const styles = window.getComputedStyle(unit)
               const enterOffset = Number.parseFloat(styles.getPropertyValue('--copy-enter-offset')) || 2.35
               const leaveOffset = Number.parseFloat(styles.getPropertyValue('--copy-leave-offset')) || -2.25
+              const axis = portrait ? 'X' : 'Y'
+              const enterDirection = portrait ? -1 : 1
+              const leaveDirection = portrait ? -1 : 1
 
               unit.style.opacity = String(visibility)
               unit.style.transform = mode === 'entering'
-                ? `translateY(${(1 - visibility) * enterOffset}em)`
+                ? `translate${axis}(${(1 - visibility) * enterOffset * enterDirection}em)`
                 : mode === 'leaving'
-                  ? `translateY(${unitProgress * leaveOffset}em)`
+                  ? `translate${axis}(${unitProgress * leaveOffset * leaveDirection}em)`
                   : visibility > 0
-                    ? 'translateY(0)'
-                    : `translateY(${enterOffset}em)`
+                    ? `translate${axis}(0)`
+                    : `translate${axis}(${enterOffset * enterDirection}em)`
             })
           }
           const setCtaTransition = (
@@ -676,6 +704,93 @@ export default defineEventHandler(async event => {
             }
           })
 
+          const motionTrailSamples = 16
+          const motionTrailDelayRatio = transitionSeconds > 0
+            ? .002 / transitionSeconds
+            : 0
+          panels.forEach((panel) => {
+            const layer = panel?.querySelector<HTMLElement>('.motion-trail-layer')
+            if (!layer) return
+
+            if (!transition || !motionBlur || textLineTransition) {
+              layer.replaceChildren()
+              delete layer.dataset.transitionKey
+              return
+            }
+
+            const slides = Array.from(
+              panel.querySelectorAll<HTMLElement>(':scope > .slot-slide')
+            )
+            const current = slides[currentIndex]
+            const next = slides[nextIndex]
+            if (!current || !next) return
+            const transitionKey = `${currentIndex}:${nextIndex}`
+
+            if (layer.dataset.transitionKey !== transitionKey) {
+              layer.replaceChildren()
+              layer.dataset.transitionKey = transitionKey
+
+              const createSample = (
+                source: HTMLElement,
+                mode: 'entering' | 'leaving',
+                sampleIndex: number
+              ) => {
+                const clone = source.cloneNode(true) as HTMLElement
+                clone.removeAttribute('id')
+                clone.querySelectorAll('[id]').forEach(element => element.removeAttribute('id'))
+                clone.setAttribute('aria-hidden', 'true')
+                clone.classList.remove('is-active', 'is-leaving')
+                clone.classList.add('motion-trail-sample')
+                clone.dataset.motionMode = mode
+                clone.dataset.motionSample = String(sampleIndex)
+                clone.style.animation = 'none'
+                clone.style.opacity = '.04'
+                clone.style.transformOrigin = window.getComputedStyle(source).transformOrigin
+
+                const sourceVideos = Array.from(source.querySelectorAll<HTMLVideoElement>('video'))
+                clone.querySelectorAll<HTMLVideoElement>('video').forEach((video, videoIndex) => {
+                  const sourceVideo = sourceVideos[videoIndex]
+                  if (!sourceVideo || sourceVideo.readyState < 2) return
+                  const canvas = document.createElement('canvas')
+                  canvas.className = video.className
+                  canvas.style.cssText = video.style.cssText
+                  canvas.width = Math.max(1, sourceVideo.videoWidth)
+                  canvas.height = Math.max(1, sourceVideo.videoHeight)
+                  canvas.getContext('2d')?.drawImage(
+                    sourceVideo,
+                    0,
+                    0,
+                    canvas.width,
+                    canvas.height
+                  )
+                  video.replaceWith(canvas)
+                })
+                return clone
+              }
+
+              for (let sampleIndex = 0; sampleIndex < motionTrailSamples; sampleIndex += 1) {
+                layer.append(
+                  createSample(current, 'leaving', sampleIndex),
+                  createSample(next, 'entering', sampleIndex)
+                )
+              }
+            }
+
+            layer.querySelectorAll<HTMLElement>('.motion-trail-sample').forEach((sample) => {
+              const sampleIndex = Number(sample.dataset.motionSample || 0)
+              const delayedProgress = easeCopyProgress(
+                rawProgress - sampleIndex * motionTrailDelayRatio
+              )
+              const mode = sample.dataset.motionMode
+              const scale = mode === 'leaving'
+                ? 1 - delayedProgress
+                : delayedProgress
+              sample.style.transform = portrait
+                ? `scaleX(${scale})`
+                : `scaleY(${scale})`
+            })
+          })
+
           const pulsePhase = (time % 1.8) / 1.8
           const pulseAmount = Math.sin(Math.PI * pulsePhase) ** 2
           root?.querySelectorAll<HTMLElement>('.slide-cta.is-pulsing').forEach((cta) => {
@@ -722,6 +837,9 @@ export default defineEventHandler(async event => {
           reverseDirections: settings.reverseDirections,
           swapPanels,
           textLineTransition: Boolean(settings.textLineTransition),
+          // Export motion blur is applied to the completed screenshots below.
+          // Keeping capture clean lets word opacity and blur compose correctly.
+          motionBlur: false,
           showPackshotOnFinalSlide: Boolean(settings.showPackshotOnFinalSlide),
           packshotWidth: Math.max(5, Math.min(100, Math.round(settings.packshotWidth || 28))),
           packshotPlayback: settings.packshotPlayback === 'loop' ? 'loop' : 'once',
@@ -774,6 +892,13 @@ export default defineEventHandler(async event => {
     })
 
     const resizeFilter = `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height}`
+    const temporalMotionBlurFilter = getTemporalMotionBlurFilter(
+      Boolean(settings.motionBlur),
+      fps,
+      typeof settings.motionBlurIntensity === 'number'
+        ? settings.motionBlurIntensity
+        : 50
+    )
 
     if (settings.exportFormat === 'mp4') {
       const scaleFilter = [
@@ -784,7 +909,16 @@ export default defineEventHandler(async event => {
         'out_color_matrix=bt709'
       ].join(':')
       const output = join(directory, 'animation.mp4')
-      sendProgress(0.86, 'Encoding MP4')
+      sendProgress(
+        0.86,
+        temporalMotionBlurFilter ? 'Applying motion blur and encoding MP4' : 'Encoding MP4'
+      )
+      const videoFilters = [
+        resizeFilter,
+        temporalMotionBlurFilter,
+        scaleFilter,
+        'format=yuv420p'
+      ].filter(Boolean)
       await runFfmpeg([
         '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:2', '-nostats',
         '-framerate', String(fps),
@@ -792,7 +926,7 @@ export default defineEventHandler(async event => {
         '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
         '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited',
         '-pix_fmt', 'yuv420p',
-        '-vf', `${resizeFilter},${scaleFilter},format=yuv420p`,
+        '-vf', videoFilters.join(','),
         '-color_primaries', 'bt709',
         '-color_trc', 'bt709',
         '-colorspace', 'bt709',
@@ -812,12 +946,16 @@ export default defineEventHandler(async event => {
       return
     }
 
-    sendProgress(0.86, 'Resizing PNG frames')
+    sendProgress(
+      0.86,
+      temporalMotionBlurFilter ? 'Applying motion blur to PNG frames' : 'Resizing PNG frames'
+    )
+    const pngFilters = [resizeFilter, temporalMotionBlurFilter].filter(Boolean)
     await runFfmpeg([
       '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:2', '-nostats',
       '-framerate', String(fps),
       '-i', join(sourceDirectory, `frame-%0${digits}d.png`),
-      '-vf', resizeFilter,
+      '-vf', pngFilters.join(','),
       '-start_number', '1',
       '-y',
       join(outputDirectory, `frame-%0${digits}d.png`)

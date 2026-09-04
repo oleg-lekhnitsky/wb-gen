@@ -11,6 +11,7 @@ defineProps<{
   heading: string
   headingHighlights?: HeadingHighlight[]
   headingSize: number
+  headingAutoScale?: boolean
   subheading: string
   subheadingSize: number
   legalText: string
@@ -26,6 +27,7 @@ const emit = defineEmits<{
   'update:heading': [value: string]
   'update:headingHighlights': [value: HeadingHighlight[]]
   'update:headingSize': [value: number]
+  'update:headingAutoScale': [value: boolean]
   'update:subheading': [value: string]
   'update:subheadingSize': [value: number]
   'update:legalText': [value: string]
@@ -87,6 +89,29 @@ function rangeStyle(value: number | undefined, min: number, max: number) {
     </div>
 
     <div class="text-size-control">
+      <label
+        class="auto-fit-toggle"
+        :class="{ 'is-active': headingAutoScale }"
+      >
+        <span class="auto-fit-toggle__icon" aria-hidden="true">↔</span>
+        <span class="auto-fit-toggle__copy">
+          <span class="auto-fit-toggle__title">
+            Auto-fit heading
+            <small>Experimental</small>
+          </span>
+          <span class="auto-fit-toggle__description">
+            One shared size · balances short words around the longest line
+          </span>
+        </span>
+        <input
+          class="auto-fit-toggle__input"
+          :checked="headingAutoScale"
+          type="checkbox"
+          @change="emit('update:headingAutoScale', ($event.target as HTMLInputElement).checked)"
+        >
+        <span class="auto-fit-toggle__switch" aria-hidden="true" />
+      </label>
+
       <label>
         <span>Heading size</span>
         <div class="range-row">

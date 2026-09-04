@@ -38,6 +38,7 @@ type PreviewSlide = {
     preset: 'white-pink' | 'purple-white'
   }>
   headingSize: number
+  headingAutoScale?: boolean
   subheading: string
   subheadingSize: number
   ctaText?: string
@@ -68,6 +69,7 @@ const props = defineProps<{
   swapVerticalPanels: boolean
   swapHorizontalPanels: boolean
   swapUltraNarrowPanels: boolean
+  contentLayoutPreset: 'stacked' | 'adaptive-split'
   renderDisabled?: boolean
   isRendering?: boolean
   renderProgress?: number
@@ -254,6 +256,11 @@ function getPreviewSlides(preset: AspectPreset) {
       : props.swapHorizontalPanels
   if (shouldSwapPanels) return [slides.right, slides.left]
   return [slides.left, slides.right]
+}
+
+function getPreviewContentSlide(preset: AspectPreset, slide: PreviewSlide) {
+  if (props.contentLayoutPreset !== 'adaptive-split') return slide
+  return getPreviewSlides(preset)[0] ?? slide
 }
 
 function addPreset() {
@@ -500,7 +507,8 @@ watch(
               class="aspect-preview-card__design slot-stage"
               :class="{
                 'is-portrait': isPortrait(preset),
-                'is-ultra-narrow': isUltraNarrow(preset)
+                'is-ultra-narrow': isUltraNarrow(preset),
+                'has-adaptive-content-layout': contentLayoutPreset === 'adaptive-split'
               }"
               :style="{ aspectRatio: `${preset.width} / ${preset.height}` }"
             >
@@ -508,7 +516,10 @@ watch(
                 v-for="(slide, slideIndex) in getPreviewSlides(preset)"
                 :key="slideIndex"
                 class="slot-panel"
-                :class="slideIndex === 0 ? 'slot-panel--left' : 'slot-panel--right'"
+                :class="[
+                  slideIndex === 0 ? 'slot-panel--left' : 'slot-panel--right',
+                  slideIndex === 0 ? 'slot-panel--visual-start' : 'slot-panel--visual-end'
+                ]"
               >
                 <span
                   class="slot-slide is-active"
@@ -527,53 +538,62 @@ watch(
                   />
                   <span
                     class="slide-content"
-                    :class="{ 'has-brand-pink-text': hasWhiteBackground(slide) }"
-                    :style="{ '--logo-width': `${slide.logoWidth}%` }"
+                    :class="{
+                      'has-brand-pink-text': hasWhiteBackground(getPreviewContentSlide(preset, slide))
+                    }"
+                    :style="{
+                      '--logo-width': `${getPreviewContentSlide(preset, slide).logoWidth}%`
+                    }"
                   >
                     <SlideCta
-                      :text="slide.ctaText"
-                      :size="slide.ctaSize"
-                      :pulse="slide.ctaPulse"
-                      :align="slide.ctaAlign"
-                      :bottom-margin="slide.ctaBottomMargin"
+                      :text="getPreviewContentSlide(preset, slide).ctaText"
+                      :size="getPreviewContentSlide(preset, slide).ctaSize"
+                      :pulse="getPreviewContentSlide(preset, slide).ctaPulse"
+                      :align="getPreviewContentSlide(preset, slide).ctaAlign"
+                      :bottom-margin="getPreviewContentSlide(preset, slide).ctaBottomMargin"
                     />
 
                     <span
                       class="slide-logo"
                       :class="{
-                        'has-logo-image': isLogoImage(slide.logo),
-                        'is-empty': !slide.logo
+                        'has-logo-image': isLogoImage(getPreviewContentSlide(preset, slide).logo),
+                        'is-empty': !getPreviewContentSlide(preset, slide).logo
                       }"
                     >
                       <img
-                        v-if="isLogoImage(slide.logo)"
-                        :src="getLogoSource(slide)"
+                        v-if="isLogoImage(getPreviewContentSlide(preset, slide).logo)"
+                        :src="getLogoSource(getPreviewContentSlide(preset, slide))"
                         :style="{
-                          width: isUltraNarrow(preset) ? '100%' : `${slide.logoWidth}%`,
+                          width: isUltraNarrow(preset)
+                            ? '100%'
+                            : `${getPreviewContentSlide(preset, slide).logoWidth}%`,
                           height: 'auto'
                         }"
                         alt=""
                       >
-                      <span v-else-if="slide.logo">{{ slide.logo }}</span>
+                      <span v-else-if="getPreviewContentSlide(preset, slide).logo">
+                        {{ getPreviewContentSlide(preset, slide).logo }}
+                      </span>
                     </span>
 
                     <AnimatedSlideCopy
-                      :heading="slide.heading"
-                      :heading-highlights="slide.headingHighlights"
-                      :heading-size="slide.headingSize"
-                      :subheading="slide.subheading"
-                      :subheading-size="slide.subheadingSize"
+                      :heading="getPreviewContentSlide(preset, slide).heading"
+                      :heading-highlights="getPreviewContentSlide(preset, slide).headingHighlights"
+                      :heading-size="getPreviewContentSlide(preset, slide).headingSize"
+                      :heading-auto-scale="getPreviewContentSlide(preset, slide).headingAutoScale"
+                      :subheading="getPreviewContentSlide(preset, slide).subheading"
+                      :subheading-size="getPreviewContentSlide(preset, slide).subheadingSize"
                     />
 
                     <span
-                      v-if="slide.legalText"
+                      v-if="getPreviewContentSlide(preset, slide).legalText"
                       class="slide-legal"
                       :style="{
-                        '--legal-scale': slide.legalSize / 100,
-                        '--legal-opacity': slide.legalOpacity / 100
+                        '--legal-scale': getPreviewContentSlide(preset, slide).legalSize / 100,
+                        '--legal-opacity': getPreviewContentSlide(preset, slide).legalOpacity / 100
                       }"
                     >
-                      {{ slide.legalText }}
+                      {{ getPreviewContentSlide(preset, slide).legalText }}
                     </span>
                   </span>
                 </span>

@@ -7,6 +7,7 @@ import BackgroundSelector from '~/components/BackgroundSelector.vue'
 import CopySlidePng from '~/components/CopySlidePng.vue'
 import CtaControls from '~/components/CtaControls.vue'
 import DraggableBackground from '~/components/DraggableBackground.vue'
+import LayoutControls from '~/components/LayoutControls.vue'
 import LogoControls from '~/components/LogoControls.vue'
 import PresetControls from '~/components/PresetControls.vue'
 import SlideEditActions from '~/components/SlideEditActions.vue'
@@ -39,6 +40,7 @@ type Slide = {
   heading: string
   headingHighlights?: HeadingHighlight[]
   headingSize: number
+  headingAutoScale?: boolean
   subheading: string
   subheadingSize: number
   ctaText?: string
@@ -62,6 +64,7 @@ type AspectSlideFields = Pick<
   | 'heading'
   | 'headingHighlights'
   | 'headingSize'
+  | 'headingAutoScale'
   | 'subheading'
   | 'subheadingSize'
   | 'ctaText'
@@ -85,6 +88,7 @@ type AspectSlideFields = Pick<
 type AspectSlideSettings = Record<PanelSide, AspectSlideFields[]>
 type PackshotRenderer = 'canvas' | 'svg'
 type PackshotPlayback = 'once' | 'loop'
+type ContentLayoutPreset = 'stacked' | 'adaptive-split'
 type AspectPreset = {
   label: string
   width: number
@@ -130,6 +134,9 @@ type PersistedSettings = {
   reverseDirections: boolean
   narrowHorizontalAnimation?: boolean
   textLineTransition?: boolean
+  motionBlur?: boolean
+  motionBlurIntensity?: number
+  contentLayoutPreset?: ContentLayoutPreset
   swapVerticalPanels: boolean
   swapHorizontalPanels?: boolean
   swapUltraNarrowPanels?: boolean
@@ -419,6 +426,7 @@ const selectedIndex = ref(0)
 const activeIndex = ref(0)
 const leavingIndex = ref<number | null>(null)
 const isSnappingSlides = ref(false)
+const isResettingTextAnimation = ref(false)
 const isPlaying = ref(true)
 const requestedSlideCount = ref(4)
 const transitionSeconds = ref(0.65)
@@ -440,6 +448,9 @@ const aspectHeight = ref(9)
 const reverseDirections = ref(false)
 const narrowHorizontalAnimation = ref(false)
 const textLineTransition = ref(false)
+const motionBlur = ref(false)
+const motionBlurIntensity = ref(50)
+const contentLayoutPreset = ref<ContentLayoutPreset>('stacked')
 const swapVerticalPanels = ref(false)
 const swapHorizontalPanels = ref(false)
 const swapUltraNarrowPanels = ref(false)
@@ -474,11 +485,14 @@ let packshotAnimationReady = false
 
 let autoplayTimer: ReturnType<typeof setInterval> | undefined
 let transitionTimer: ReturnType<typeof setTimeout> | undefined
+let textAnimationResetFrame: number | undefined
+let textAnimationPlayFrame: number | undefined
 let saveTimer: ReturnType<typeof setTimeout> | undefined
 let undoSnapshotTimer: ReturnType<typeof setTimeout> | undefined
 let exportProgressTimer: ReturnType<typeof setInterval> | undefined
 const undoHistory: string[] = []
 const maxUndoHistory = 30
+const motionTrailSampleCount = 16
 
 const slideCount = computed(() => panelSlides.value.left.length)
 const hasPulsingCta = computed(() => panelSides.some(side => (
@@ -488,6 +502,11 @@ const hasCta = computed(() => panelSides.some(side => (
   panelSlides.value[side].some(slide => Boolean(slide.ctaText))
 )))
 const transitionDuration = computed(() => transitionSeconds.value * 1000)
+const motionBlurStrength = computed(() => (
+  Math.max(0, Math.min(100, motionBlurIntensity.value)) / 100
+))
+const motionTrailDelayMs = computed(() => 1 + motionBlurStrength.value * 2)
+const motionTrailOpacity = computed(() => motionBlurStrength.value * 0.08)
 const intervalDuration = computed(
   () => (
     (leavingIndex.value !== null ? transitionSeconds.value : 0)
@@ -526,6 +545,23 @@ const stagePanelSides = computed<PanelSide[]>(() => (
     ? ['right', 'left']
     : panelSides
 ))
+
+function getVisualStartSide(): PanelSide {
+  if (isPortrait.value) return activePanelSwap.value ? 'right' : 'left'
+  return stagePanelSides.value[0] ?? 'left'
+}
+
+function getLayoutContentSlide(side: PanelSide, index: number): Slide {
+  if (contentLayoutPreset.value !== 'adaptive-split') {
+    return panelSlides.value[side][index] ?? createSlide(side, index)
+  }
+
+  const sourceSide = getVisualStartSide()
+  return panelSlides.value[sourceSide][index]
+    ?? panelSlides.value[side][index]
+    ?? createSlide(side, index)
+}
+
 const shouldShowPackshot = computed(
   () =>
     showPackshotOnFinalSlide.value
@@ -702,6 +738,7 @@ function getAspectSlideFields(slide: Slide): AspectSlideFields {
     heading: slide.heading,
     headingHighlights: normalizeHeadingHighlights(slide.headingHighlights, slide.heading),
     headingSize: slide.headingSize,
+    headingAutoScale: slide.headingAutoScale ?? false,
     subheading: slide.subheading,
     subheadingSize: slide.subheadingSize,
     ctaText: slide.ctaText || '',
@@ -1062,14 +1099,107 @@ function showSlide(index: number) {
   if (index === activeIndex.value || leavingIndex.value !== null) return
 
   const previousIndex = activeIndex.value
+  buildMotionTrails(previousIndex, index)
   leavingIndex.value = activeIndex.value
   activeIndex.value = index
   schedulePackshotPlayback(previousIndex, index)
+  void nextTick(() => startMotionTrails(previousIndex, index))
 
   clearTimeout(transitionTimer)
   transitionTimer = setTimeout(() => {
     leavingIndex.value = null
+    clearMotionTrails()
   }, transitionDuration.value)
+}
+
+function replaceTrailVideos(source: HTMLElement, clone: HTMLElement) {
+  const sourceVideos = Array.from(source.querySelectorAll<HTMLVideoElement>('video'))
+  const cloneVideos = Array.from(clone.querySelectorAll<HTMLVideoElement>('video'))
+
+  cloneVideos.forEach((video, index) => {
+    const sourceVideo = sourceVideos[index]
+    if (!sourceVideo || sourceVideo.readyState < 2) return
+
+    const canvas = document.createElement('canvas')
+    canvas.className = video.className
+    canvas.style.cssText = video.style.cssText
+    canvas.width = Math.max(1, sourceVideo.videoWidth)
+    canvas.height = Math.max(1, sourceVideo.videoHeight)
+    canvas.getContext('2d')?.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height)
+    video.replaceWith(canvas)
+  })
+}
+
+function createMotionTrailSample(
+  source: HTMLElement,
+  mode: 'entering' | 'leaving',
+  sampleIndex: number
+) {
+  const clone = source.cloneNode(true) as HTMLElement
+  clone.querySelectorAll('[id]').forEach(element => element.removeAttribute('id'))
+  clone.removeAttribute('id')
+  clone.setAttribute('aria-hidden', 'true')
+  clone.classList.remove('is-active', 'is-leaving')
+  clone.classList.add(
+    'motion-trail-sample',
+    mode === 'entering' ? 'is-motion-entering' : 'is-motion-leaving'
+  )
+  if (isPortrait.value) clone.classList.add('is-motion-axis-x')
+  clone.style.setProperty('--motion-trail-delay', `${sampleIndex * motionTrailDelayMs.value}ms`)
+  clone.style.animationPlayState = 'paused'
+  clone.style.transformOrigin = getComputedStyle(source).transformOrigin
+  replaceTrailVideos(source, clone)
+  return clone
+}
+
+function clearMotionTrails() {
+  document.querySelectorAll('.slot-stage--main .motion-trail-layer').forEach((layer) => {
+    layer.replaceChildren()
+  })
+}
+
+function buildMotionTrails(previousIndex: number, nextIndex: number) {
+  clearMotionTrails()
+  if (!motionBlur.value || motionBlurIntensity.value <= 0 || textLineTransition.value) return
+
+  document.querySelectorAll<HTMLElement>('.slot-stage--main .slot-panel').forEach((panel) => {
+    const layer = panel.querySelector<HTMLElement>('.motion-trail-layer')
+    const slides = Array.from(panel.children)
+      .filter((element): element is HTMLElement => (
+        element instanceof HTMLElement && element.classList.contains('slot-slide')
+      ))
+    const previous = slides[previousIndex]
+    const next = slides[nextIndex]
+    if (!layer || !previous || !next) return
+
+    for (let sampleIndex = 0; sampleIndex < motionTrailSampleCount; sampleIndex += 1) {
+      layer.append(
+        createMotionTrailSample(previous, 'leaving', sampleIndex),
+        createMotionTrailSample(next, 'entering', sampleIndex)
+      )
+    }
+  })
+}
+
+function startMotionTrails(previousIndex: number, nextIndex: number) {
+  if (!motionBlur.value || motionBlurIntensity.value <= 0 || textLineTransition.value) return
+
+  document.querySelectorAll<HTMLElement>('.slot-stage--main .slot-panel').forEach((panel) => {
+    const slides = Array.from(panel.children)
+      .filter((element): element is HTMLElement => (
+        element instanceof HTMLElement && element.classList.contains('slot-slide')
+      ))
+    const previous = slides[previousIndex]
+    const next = slides[nextIndex]
+    const layer = panel.querySelector<HTMLElement>('.motion-trail-layer')
+    if (!previous || !next || !layer) return
+
+    layer.querySelectorAll<HTMLElement>('.motion-trail-sample').forEach((sample) => {
+      const source = sample.classList.contains('is-motion-leaving') ? previous : next
+      sample.style.transformOrigin = getComputedStyle(source).transformOrigin
+      sample.style.animationPlayState = 'running'
+    })
+  })
 }
 
 function showNextSlide() {
@@ -1100,15 +1230,39 @@ function togglePlayback() {
   }
 }
 
+function cancelTextAnimationReset() {
+  if (textAnimationResetFrame) cancelAnimationFrame(textAnimationResetFrame)
+  if (textAnimationPlayFrame) cancelAnimationFrame(textAnimationPlayFrame)
+  textAnimationResetFrame = undefined
+  textAnimationPlayFrame = undefined
+  isResettingTextAnimation.value = false
+}
+
+function replayActiveTextAnimation() {
+  cancelTextAnimationReset()
+  if (!textLineTransition.value) return
+
+  isResettingTextAnimation.value = true
+  textAnimationResetFrame = requestAnimationFrame(() => {
+    textAnimationPlayFrame = requestAnimationFrame(() => {
+      isResettingTextAnimation.value = false
+      textAnimationResetFrame = undefined
+      textAnimationPlayFrame = undefined
+    })
+  })
+}
+
 function startPlayback() {
   if (!loopSlides.value && activeIndex.value >= slideCount.value - 1) {
     snapToFirstSlide()
   }
   isPlaying.value = true
+  replayActiveTextAnimation()
   restartAutoplay()
 }
 
 function stopPlayback() {
+  cancelTextAnimationReset()
   isPlaying.value = false
   clearTimeout(autoplayTimer)
   clearTimeout(transitionTimer)
@@ -1125,6 +1279,7 @@ function finishPlayback() {
 }
 
 function snapToFirstSlide() {
+  clearMotionTrails()
   isSnappingSlides.value = true
   leavingIndex.value = null
   activeIndex.value = 0
@@ -1249,6 +1404,7 @@ function applySelectedTextToAspectRatios() {
     | 'heading'
     | 'headingHighlights'
     | 'headingSize'
+    | 'headingAutoScale'
     | 'subheading'
     | 'subheadingSize'
     | 'legalText'
@@ -1260,6 +1416,7 @@ function applySelectedTextToAspectRatios() {
     heading: slide.heading,
     headingHighlights: normalizeHeadingHighlights(slide.headingHighlights, slide.heading),
     headingSize: slide.headingSize,
+    headingAutoScale: slide.headingAutoScale ?? false,
     subheading: slide.subheading,
     subheadingSize: slide.subheadingSize,
     legalText: slide.legalText,
@@ -2510,6 +2667,8 @@ async function downloadMp4(
   const formData = new FormData()
   formData.set('fps', String(fps))
   formData.set('prefix', prefix)
+  formData.set('motionBlur', String(motionBlur.value))
+  formData.set('motionBlurIntensity', String(motionBlurIntensity.value))
   for (const file of files) {
     formData.append(
       'frames',
@@ -2873,6 +3032,7 @@ async function renderSequence() {
       && !hasPulsingCta.value
       && !hasCta.value
       && !textLineTransition.value
+      && !motionBlur.value
     ) {
       await renderPngSequenceInBrowser(width, height, fps, frameCount, prefix)
       exportProgress.value = 1
@@ -2903,6 +3063,9 @@ async function renderSequence() {
       reverseDirections: reverseDirections.value,
       narrowHorizontalAnimation: narrowHorizontalAnimation.value,
       textLineTransition: textLineTransition.value,
+      motionBlur: motionBlur.value,
+      motionBlurIntensity: motionBlurIntensity.value,
+      contentLayoutPreset: contentLayoutPreset.value,
       swapVerticalPanels: swapVerticalPanels.value,
       swapHorizontalPanels: swapHorizontalPanels.value,
       swapUltraNarrowPanels: swapUltraNarrowPanels.value,
@@ -3007,6 +3170,7 @@ function isValidSlide(value: unknown): value is Slide {
     && typeof slide.heading === 'string'
     && isValidHeadingHighlights(slide.headingHighlights)
     && (slide.headingSize === undefined || typeof slide.headingSize === 'number')
+    && (slide.headingAutoScale === undefined || typeof slide.headingAutoScale === 'boolean')
     && typeof slide.subheading === 'string'
     && (slide.subheadingSize === undefined || typeof slide.subheadingSize === 'number')
     && (slide.ctaText === undefined || typeof slide.ctaText === 'string')
@@ -3039,6 +3203,7 @@ function normalizeSlide(slide: Slide): Slide {
     checkerCells: normalizeCheckerCells(slide.checkerCells),
     bottomFade: slide.bottomFade ?? false,
     headingHighlights: normalizeHeadingHighlights(slide.headingHighlights, slide.heading),
+    headingAutoScale: slide.headingAutoScale ?? false,
     headingSize:
       typeof slide.headingSize === 'number'
         ? Math.max(25, Math.min(200, slide.headingSize))
@@ -3096,6 +3261,7 @@ function isValidAspectSlideFields(value: unknown): value is AspectSlideFields {
     && typeof fields.heading === 'string'
     && isValidHeadingHighlights(fields.headingHighlights)
     && typeof fields.headingSize === 'number'
+    && (fields.headingAutoScale === undefined || typeof fields.headingAutoScale === 'boolean')
     && typeof fields.subheading === 'string'
     && (fields.subheadingSize === undefined || typeof fields.subheadingSize === 'number')
     && (fields.ctaText === undefined || typeof fields.ctaText === 'string')
@@ -3139,6 +3305,7 @@ function normalizeAspectSlideFields(fields: AspectSlideFields): AspectSlideField
       : {}),
     bottomFade: fields.bottomFade ?? false,
     headingHighlights: normalizeHeadingHighlights(fields.headingHighlights, fields.heading),
+    headingAutoScale: fields.headingAutoScale ?? false,
     headingSize: Math.max(25, Math.min(200, fields.headingSize)),
     subheadingSize: Math.max(25, Math.min(200, fields.subheadingSize ?? 100)),
     ctaText: typeof fields.ctaText === 'string' ? fields.ctaText : '',
@@ -3260,6 +3427,15 @@ function applySettings(settings: Partial<PersistedSettings>) {
   if (typeof settings.textLineTransition === 'boolean') {
     textLineTransition.value = settings.textLineTransition
   }
+  if (typeof settings.motionBlur === 'boolean') {
+    motionBlur.value = settings.motionBlur
+  }
+  if (typeof settings.motionBlurIntensity === 'number') {
+    motionBlurIntensity.value = Math.max(0, Math.min(100, settings.motionBlurIntensity))
+  }
+  contentLayoutPreset.value = settings.contentLayoutPreset === 'adaptive-split'
+    ? 'adaptive-split'
+    : 'stacked'
   if (typeof settings.exportFps === 'number') {
     exportFps.value = Math.max(1, Math.min(60, Math.round(settings.exportFps)))
   }
@@ -3487,6 +3663,9 @@ function getCurrentSettings(): PersistedSettings {
     reverseDirections: reverseDirections.value,
     narrowHorizontalAnimation: narrowHorizontalAnimation.value,
     textLineTransition: textLineTransition.value,
+    motionBlur: motionBlur.value,
+    motionBlurIntensity: motionBlurIntensity.value,
+    contentLayoutPreset: contentLayoutPreset.value,
     swapVerticalPanels: swapVerticalPanels.value,
     swapHorizontalPanels: swapHorizontalPanels.value,
     swapUltraNarrowPanels: swapUltraNarrowPanels.value,
@@ -3669,6 +3848,9 @@ onMounted(async () => {
       reverseDirections,
       narrowHorizontalAnimation,
       textLineTransition,
+      motionBlur,
+      motionBlurIntensity,
+      contentLayoutPreset,
       swapVerticalPanels,
       swapHorizontalPanels,
       swapUltraNarrowPanels,
@@ -3695,6 +3877,7 @@ onBeforeUnmount(() => {
   clearTimeout(packshotStartTimer)
   clearTimeout(copySlideStatusTimer)
   if (packshotTransitionFrame) cancelAnimationFrame(packshotTransitionFrame)
+  cancelTextAnimationReset()
   stopCurveDrag()
   packshotAnimation?.destroy()
   packshotAnimation = null
@@ -3704,6 +3887,12 @@ onBeforeUnmount(() => {
 })
 
 watch([transitionSeconds, pauseSeconds, firstPauseSeconds], restartAutoplay)
+watch(motionBlur, (enabled) => {
+  if (!enabled) clearMotionTrails()
+})
+watch(textLineTransition, (enabled) => {
+  if (enabled) clearMotionTrails()
+})
 watch([packshotRenderer, packshotPlayback], () => {
   void initPackshotAnimation()
 })
@@ -3730,22 +3919,29 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             'is-ultra-narrow': isUltraNarrow,
             'is-reversed': reverseDirections,
             'is-horizontal-animation': isUltraNarrow && narrowHorizontalAnimation,
+            'has-motion-blur': motionBlur,
+            'is-transitioning': leavingIndex !== null,
+            'has-adaptive-content-layout': contentLayoutPreset === 'adaptive-split',
             'is-swapped': isPortrait && activePanelSwap,
-            'is-snapping': isSnappingSlides
+            'is-snapping': isSnappingSlides,
+            'is-resetting-text-animation': isResettingTextAnimation
           }"
           :style="{
             '--transition-duration': `${transitionSeconds}s`,
             '--transition-curve': easingValue,
+            '--motion-trail-opacity': motionTrailOpacity,
             aspectRatio: `${aspectWidth} / ${aspectHeight}`
           }"
         >
           <div
-            v-for="(side, sideVisualIndex) in stagePanelSides"
+            v-for="side in stagePanelSides"
             :key="side"
             class="slot-panel"
             :class="[
               `slot-panel--${side}`,
-              sideVisualIndex === 0 ? 'slot-panel--visual-start' : 'slot-panel--visual-end'
+              side === getVisualStartSide()
+                ? 'slot-panel--visual-start'
+                : 'slot-panel--visual-end'
             ]"
           >
             <article
@@ -3774,60 +3970,70 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
               />
               <div
                 class="slide-content"
-                :class="{ 'has-brand-pink-text': hasWhiteBackground(slide) }"
-                :style="{ '--logo-width': `${slide.logoWidth}%` }"
+                :class="{
+                  'has-brand-pink-text': hasWhiteBackground(getLayoutContentSlide(side, index))
+                }"
+                :style="{
+                  '--logo-width': `${getLayoutContentSlide(side, index).logoWidth}%`
+                }"
               >
                 <SlideCta
-                  :text="slide.ctaText"
-                  :size="slide.ctaSize"
-                  :pulse="slide.ctaPulse"
-                  :align="slide.ctaAlign"
-                  :bottom-margin="slide.ctaBottomMargin"
+                  :text="getLayoutContentSlide(side, index).ctaText"
+                  :size="getLayoutContentSlide(side, index).ctaSize"
+                  :pulse="getLayoutContentSlide(side, index).ctaPulse"
+                  :align="getLayoutContentSlide(side, index).ctaAlign"
+                  :bottom-margin="getLayoutContentSlide(side, index).ctaBottomMargin"
                 />
 
                 <div
                   class="slide-logo"
                   :class="{
-                    'has-logo-image': isLogoImage(slide.logo),
-                    'is-empty': !slide.logo
+                    'has-logo-image': isLogoImage(getLayoutContentSlide(side, index).logo),
+                    'is-empty': !getLayoutContentSlide(side, index).logo
                   }"
                 >
                   <img
-                    v-if="isLogoImage(slide.logo)"
-                    :src="getLogoSource(slide)"
+                    v-if="isLogoImage(getLayoutContentSlide(side, index).logo)"
+                    :src="getLogoSource(getLayoutContentSlide(side, index))"
                     :style="{
-                      width: isUltraNarrow ? '100%' : `${slide.logoWidth}%`,
+                      width: isUltraNarrow
+                        ? '100%'
+                        : `${getLayoutContentSlide(side, index).logoWidth}%`,
                       height: 'auto'
                     }"
                     alt=""
                   >
-                  <span v-else-if="slide.logo">{{ slide.logo }}</span>
+                  <span v-else-if="getLayoutContentSlide(side, index).logo">
+                    {{ getLayoutContentSlide(side, index).logo }}
+                  </span>
                 </div>
 
                 <AnimatedSlideCopy
-                  :heading="slide.heading"
-                  :heading-highlights="slide.headingHighlights"
-                  :heading-size="slide.headingSize"
-                  :subheading="slide.subheading"
-                  :subheading-size="slide.subheadingSize"
+                  :heading="getLayoutContentSlide(side, index).heading"
+                  :heading-highlights="getLayoutContentSlide(side, index).headingHighlights"
+                  :heading-size="getLayoutContentSlide(side, index).headingSize"
+                  :heading-auto-scale="getLayoutContentSlide(side, index).headingAutoScale"
+                  :subheading="getLayoutContentSlide(side, index).subheading"
+                  :subheading-size="getLayoutContentSlide(side, index).subheadingSize"
                   :animate="textLineTransition"
                 />
 
                 <p
-                  v-if="slide.legalText"
+                  v-if="getLayoutContentSlide(side, index).legalText"
                   class="slide-legal"
                   :style="{
-                    '--legal-scale': slide.legalSize / 100,
-                    '--legal-opacity': slide.legalOpacity / 100,
-                    '--legal-shadow': slide.legalShadow
-                      ? `0 1px 3px rgb(0 0 0 / ${slide.legalShadowOpacity}%)`
+                    '--legal-scale': getLayoutContentSlide(side, index).legalSize / 100,
+                    '--legal-opacity': getLayoutContentSlide(side, index).legalOpacity / 100,
+                    '--legal-shadow': getLayoutContentSlide(side, index).legalShadow
+                      ? `0 1px 3px rgb(0 0 0 / ${getLayoutContentSlide(side, index).legalShadowOpacity}%)`
                       : 'none'
                   }"
                 >
-                  {{ slide.legalText }}
+                  {{ getLayoutContentSlide(side, index).legalText }}
                 </p>
               </div>
             </article>
+            <div class="motion-trail-layer" aria-hidden="true" />
           </div>
 
           <div
@@ -3874,6 +4080,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         :swap-vertical-panels="swapVerticalPanels"
         :swap-horizontal-panels="swapHorizontalPanels"
         :swap-ultra-narrow-panels="swapUltraNarrowPanels"
+        :content-layout-preset="contentLayoutPreset"
         :render-disabled="isExporting"
         :is-rendering="isRenderingAspectGroup"
         :render-progress="exportProgress"
@@ -4021,10 +4228,13 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
       </div>
 
       <template v-if="selectedSlide">
+        <LayoutControls v-model="contentLayoutPreset" />
+
         <TextControls
           v-model:heading="selectedSlide.heading"
           v-model:heading-highlights="selectedSlide.headingHighlights"
           v-model:heading-size="selectedSlide.headingSize"
+          v-model:heading-auto-scale="selectedSlide.headingAutoScale"
           v-model:subheading="selectedSlide.subheading"
           v-model:subheading-size="selectedSlide.subheadingSize"
           v-model:legal-text="selectedSlide.legalText"
@@ -4227,6 +4437,35 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           </span>
           <input v-model="textLineTransition" type="checkbox">
         </label>
+
+        <label class="direction-toggle">
+          <span>
+            <strong>Motion blur</strong>
+            <small>
+              {{ textLineTransition
+                ? 'Applied after clean frame capture when exporting'
+                : 'Preview trails · export uses temporal frame mixing' }}
+            </small>
+          </span>
+          <input v-model="motionBlur" type="checkbox">
+        </label>
+
+        <div class="control-field">
+          <label for="motion-blur-intensity">Motion blur intensity</label>
+          <div class="range-row">
+            <input
+              id="motion-blur-intensity"
+              v-model.number="motionBlurIntensity"
+              :style="rangeStyle(motionBlurIntensity, 0, 100)"
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              :disabled="!motionBlur"
+            >
+            <output>{{ Math.round(motionBlurIntensity) }}%</output>
+          </div>
+        </div>
 
         <div class="control-field">
           <label for="transition-time">Slide transition timing</label>

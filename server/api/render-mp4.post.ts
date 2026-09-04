@@ -21,6 +21,22 @@ function runFfmpeg(args: string[]) {
   })
 }
 
+function getTemporalMotionBlurFilter(enabled: boolean, fps: number, intensity: number) {
+  const strength = Math.max(0, Math.min(100, intensity)) / 100
+  if (!enabled || strength <= 0) return ''
+  const exposureSeconds = 0.025 + strength * 0.105
+  const frameCount = Math.max(2, Math.min(8, Math.round(fps * exposureSeconds) + 1))
+  const trailWeight = 0.12 + strength * 0.65
+  const decay = 0.35 + strength * 0.45
+  const weights = Array.from(
+    { length: frameCount },
+    (_, index) => (
+      index === 0 ? 1 : trailWeight * Math.pow(decay, index - 1)
+    ).toFixed(3)
+  ).join(' ')
+  return `tmix=frames=${frameCount}:weights='${weights}'`
+}
+
 export default defineEventHandler(async event => {
   const parts = await readMultipartFormData(event)
   if (!parts) {
@@ -31,6 +47,11 @@ export default defineEventHandler(async event => {
   const fps = Math.max(
     1,
     Math.min(60, Number.parseInt(fpsPart?.data.toString() || '30', 10))
+  )
+  const motionBlur = parts.find(part => part.name === 'motionBlur')
+    ?.data.toString() === 'true'
+  const motionBlurIntensity = Number(
+    parts.find(part => part.name === 'motionBlurIntensity')?.data.toString() || 50
   )
   const frames = parts
     .filter(part => part.name === 'frames' && part.data.length > 0)
@@ -62,13 +83,17 @@ export default defineEventHandler(async event => {
       '-crf', '18',
       '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited',
       '-pix_fmt', 'yuv420p',
-      '-vf', `${[
-        'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-        'flags=lanczos+accurate_rnd+full_chroma_int',
-        'in_range=full',
-        'out_range=limited',
-        'out_color_matrix=bt709'
-      ].join(':')},format=yuv420p`,
+      '-vf', [
+        getTemporalMotionBlurFilter(motionBlur, fps, motionBlurIntensity),
+        [
+          'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+          'flags=lanczos+accurate_rnd+full_chroma_int',
+          'in_range=full',
+          'out_range=limited',
+          'out_color_matrix=bt709'
+        ].join(':'),
+        'format=yuv420p'
+      ].filter(Boolean).join(','),
       '-color_primaries', 'bt709',
       '-color_trc', 'bt709',
       '-colorspace', 'bt709',
