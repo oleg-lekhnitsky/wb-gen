@@ -1,5 +1,5 @@
 /* One importer for both the local plugin and automated MCP validation. */
-async function importBanner(figma, data, imageHashes = {}) {
+async function importBanner(figma, data, imageHashes = {}, position) {
   if (data.version !== 1 || !Array.isArray(data.panels)) throw new Error('Unsupported banner export version.');
   const warnings = [...(data.warnings || [])], createdNodeIds = [], fontDiagnostics = [], textDiagnostics = [];
   const track = node => { createdNodeIds.push(node.id); return node; };
@@ -9,8 +9,9 @@ async function importBanner(figma, data, imageHashes = {}) {
   for (const panel of data.panels) for (const block of panel.layers) for (const layer of (block.type === 'text' ? [block,...(block.runs || [])] : [])) {
     const key = JSON.stringify(layer.font);
     if (fontMap.has(key)) continue;
-    const family = ({WBSans:'WB Sans',InterVariable:'Inter'})[layer.font.family] || layer.font.family;
-    const axes = await figma.getFontFamilyVariationAxes(family);
+    const family = ({WBSans:'WB Sans',InterVariable:'Inter Variable'})[layer.font.family] || layer.font.family;
+    const availableAxes = await figma.getFontFamilyVariationAxes(family);
+    const axes = availableAxes?.length ? availableAxes : null;
     const variations = {...layer.font.variations};
     if(axes && axes.includes('wght')) variations.wght = layer.font.weight;
     const unsupported = Object.keys(variations).filter(axis=>!axes || !axes.includes(axis));
@@ -18,13 +19,14 @@ async function importBanner(figma, data, imageHashes = {}) {
     const supported = Object.fromEntries(Object.entries(variations).filter(([axis])=>axes?.includes(axis)));
     const style = layer.font.weight >= 700 ? 'Bold' : layer.font.weight >= 500 ? 'Medium' : 'Regular';
     const exact = allFonts.find(f=>f.fontName.family===family && f.fontName.style===style);
-    if(!exact && !axes)throw new Error(`Missing exact font: ${family} ${style}. Install it before importing.`);
+    if(!exact && !axes)throw new Error(family.startsWith('WB Resizer Legal') ? `Install ${family==='WB Resizer Legal Condensed'?'WBResizerLegalCondensed-Regular.ttf':'WBResizerLegal-Regular.ttf'} from the Resizer app/assets folder, then reopen the plugin.` : `Missing exact font: ${family} ${style}. Install it before importing.`);
     const font = axes ? {family,variationSettings:supported} : exact.fontName;
     await figma.loadFontAsync(font);fontMap.set(key,font);
     fontDiagnostics.push({requested:layer.font,resolved:font,availableAxes:axes || [],unsupportedAxes:unsupported});
   }
-  const root=track(figma.createFrame());root.name='DRAFT / '+data.name;root.resize(data.width,data.height);root.fills=[];root.clipsContent=true;
-  root.x=Math.max(0,...figma.currentPage.children.filter(n=>n.id!==root.id).map(n=>n.x+n.width))+80;root.y=0;
+  const root=track(figma.createFrame());root.name=`${data.width} × ${data.height}`;root.resize(data.width,data.height);root.fills=[];root.clipsContent=true;
+  const center=figma.viewport.center || {x:0,y:0};
+  root.x=position?.x ?? center.x-data.width/2;root.y=position?.y ?? center.y-data.height/2;
   try {
     for(const panel of data.panels){
       const frame=track(figma.createFrame());root.appendChild(frame);frame.name=panel.name;frame.resize(panel.width,panel.height);frame.x=panel.x;frame.y=panel.y;frame.fills=solid(panel.color);frame.clipsContent=true;
@@ -68,4 +70,4 @@ async function importBanner(figma, data, imageHashes = {}) {
   }catch(error){root.remove();throw error;}
 }
 
-figma.showUI(__html__,{width:420,height:360});figma.ui.onmessage=async message=>{if(message.type!=='import')return;try{const result=await importBanner(figma,message.data);const node=await figma.getNodeByIdAsync(result.bannerId);const png=Array.from(await node.exportAsync({format:'PNG',constraint:{type:'SCALE',value:1}}));figma.ui.postMessage({result,png})}catch(error){figma.ui.postMessage({error:error.message})}};
+figma.showUI(__html__,{width:420,height:360});let nextImportPosition;let batchNodeIds=[];figma.ui.onmessage=async message=>{if(message.type!=='import')return;try{if(message.batchStart){nextImportPosition=undefined;batchNodeIds=[]}const result=await importBanner(figma,message.data,{},nextImportPosition);const node=await figma.getNodeByIdAsync(result.bannerId);batchNodeIds.push(node.id);nextImportPosition={x:node.x+node.width+80,y:node.y};if(message.batchEnd){const nodes=await Promise.all(batchNodeIds.map(id=>figma.getNodeByIdAsync(id)));figma.viewport.scrollAndZoomIntoView(nodes.filter(Boolean))}const png=Array.from(await node.exportAsync({format:'PNG',constraint:{type:'SCALE',value:1}}));figma.ui.postMessage({result,png})}catch(error){figma.ui.postMessage({error:error.message})}};

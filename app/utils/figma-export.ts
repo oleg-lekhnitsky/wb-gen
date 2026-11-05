@@ -85,6 +85,11 @@ export async function measureFigmaBanner(stage: HTMLElement, width: number, heig
       }
       const family=s.fontFamily.split(',')[0]!.trim().replace(/^["']|["']$/g,'')
       const variations=Object.fromEntries([...s.fontVariationSettings.matchAll(/"(.{4})"\s+(-?[\d.]+)/g)].map(m=>[m[1],Number(m[2])]))
+      // The web alias is Inter 4.1's "Inter Variable", not Figma's legacy "Inter".
+      // Keep optical sizing at the unscaled CSS font size when output dimensions differ.
+      if (family === 'InterVariable' && variations.opsz === undefined) {
+        variations.opsz = s.fontOpticalSizing === 'none' ? 14 : Math.max(14, Math.min(32, parseFloat(s.fontSize)))
+      }
       for(const node of el.childNodes) {
         if(node.nodeType!==Node.TEXT_NODE || !node.textContent?.trim())continue
         const text=node.textContent
@@ -154,5 +159,5 @@ export async function measureFigmaBanner(stage: HTMLElement, width: number, heig
     }] })
     if (canvas) warnings.push('Canvas packshot captured as a still image. Use the SVG packshot renderer for vector packshot layers.')
   }
-  return {version:1,name:`Banner ${width} × ${height}`,width,height,panels,source:{stageWidth:root.width,stageHeight:root.height,scale:sx},warnings}
+  return {version:1,name:`${width} × ${height}`,width,height,panels,source:{stageWidth:root.width,stageHeight:root.height,scale:sx},warnings}
 }

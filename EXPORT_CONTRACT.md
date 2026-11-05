@@ -43,7 +43,10 @@ capture. This guard does not validate Figma output, CSS background images, video
 or guarantee that text fits: those require separate checks.
 
 The “Export to Figma” action now downloads measured JSON for the selected still
-slide. `figma-plugin/importer.js` is the reusable importer; see
+slide. The left panel’s “Export pack to Figma” downloads that slide across the
+active pack’s sizes, retaining per-format settings and a browser reference for
+each banner. The plugin imports and compares the banners sequentially.
+`figma-plugin/importer.js` is the reusable importer; see
 [plugin setup and limitations](figma-plugin/README.md). It checks missing fonts,
 unsupported axes and text-width differences. The plugin UI also compares its PNG export against the embedded browser PNG
 reference. A mismatch or font warning requires review; these checks do not

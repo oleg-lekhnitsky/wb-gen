@@ -424,3 +424,109 @@ test('relative logo measures the original b outline without altering logo geomet
     assert.equal(await page.locator('svg').count(),0,'measurement removes its temporary SVG')
   } finally {await browser.close()}
 })
+
+test('Figma plugin imports pack banners sequentially and keeps individual review results', async () => {
+  const browser = await chromium.launch({ headless: true })
+  const page = await browser.newPage()
+  try {
+    const html = await readFile(new URL('../figma-plugin/ui.html', import.meta.url), 'utf8')
+    await page.setContent('<iframe></iframe>')
+    await page.evaluate(html => {
+      ;(window as any).imports = []
+      window.addEventListener('message', event => {
+        if (event.data.pluginMessage?.type === 'import') (window as any).imports.push(event.data.pluginMessage.data.name)
+      })
+      document.querySelector('iframe')!.srcdoc = html
+    }, html)
+    const frame = page.frameLocator('iframe')
+    await frame.locator('#file').setInputFiles({ name: 'pack.figma.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ type: 'pack', banners: [{ name: 'Portrait' }, { name: 'Landscape' }] })) })
+    await page.waitForFunction(() => (window as any).imports.length === 1)
+    assert.deepEqual(await page.evaluate(() => (window as any).imports), ['Portrait'])
+    await page.evaluate(() => document.querySelector('iframe')!.contentWindow!.postMessage({ pluginMessage: { result: { warnings: [], status: 'needs-visual-comparison' } } }, '*'))
+    await page.waitForFunction(() => (window as any).imports.length === 2)
+    await page.evaluate(() => document.querySelector('iframe')!.contentWindow!.postMessage({ pluginMessage: { result: { warnings: ['Missing reference'], status: 'needs-review' } } }, '*'))
+    await frame.locator('#file').waitFor()
+    await page.waitForFunction(() => !(document.querySelector('iframe')!.contentDocument!.querySelector('#file') as HTMLInputElement).disabled)
+    const result = JSON.parse(await frame.locator('#status').innerText())
+    assert.deepEqual(result.banners.map((banner: any) => banner.name), ['Portrait', 'Landscape'])
+    assert.equal(result.banners[1].status, 'needs-review')
+    assert.match(result.banners[0].comparison, /Missing browser reference/)
+  } finally { await browser.close() }
+})
+
+test('Figma imports start in the current viewport and accept stable pack positions', async () => {
+  const { runInNewContext } = await import('node:vm')
+  const source = await readFile(new URL('../figma-plugin/importer.js', import.meta.url), 'utf8')
+  const importBanner = runInNewContext(source + '\nimportBanner')
+  const frames: any[] = []
+  const figma = {
+    listAvailableFontsAsync: async () => [],
+    createFrame: () => { const frame = {id:String(frames.length), x:0, y:0, width:0, height:0, resize(w:number,h:number){this.width=w;this.height=h}, remove(){}}; frames.push(frame); return frame },
+    viewport: {center:{x:2500,y:-1000}, scrollAndZoomIntoView(){}},
+    currentPage: {children:[{id:'existing',x:100000,width:500}]}
+  }
+  const data = {version:1,width:400,height:600,panels:[]}
+  await importBanner(figma, data)
+  assert.equal(frames[0].x,2300)
+  assert.equal(frames[0].y,-1300)
+  figma.viewport.center = {x:0,y:0}
+  await importBanner(figma, data, {}, {x:2780,y:-1300})
+  assert.equal(frames[1].x,2780)
+  assert.equal(frames[1].y,-1300)
+})
+
+test('fixed legal font preserves variable-font widths and cap heights at the original axes', async () => {
+  const browser = await chromium.launch({headless:true})
+  const page = await browser.newPage()
+  try {
+    const variable = (await readFile(new URL('../app/assets/RobotoFlex.ttf',import.meta.url))).toString('base64')
+    const fixed = (await readFile(new URL('../app/assets/WBResizerLegal-Regular.ttf',import.meta.url))).toString('base64')
+    const result = await page.evaluate(async ({variable,fixed}) => {
+      const axes='"opsz" 50,"wght" 400,"GRAD" 0,"wdth" 25,"slnt" 0,"XOPQ" 96,"YOPQ" 79,"XTRA" 468,"YTUC" 712,"YTLC" 514,"YTAS" 750,"YTDE" -203,"YTFI" 738'
+      const original=new FontFace('OriginalLegal',`url(data:font/ttf;base64,${variable})`,{weight:'400',variationSettings:axes})
+      const frozen=new FontFace('FrozenLegal',`url(data:font/ttf;base64,${fixed})`,{weight:'400'})
+      document.fonts.add(await original.load());document.fonts.add(await frozen.load())
+      const context=document.createElement('canvas').getContext('2d')!
+      return [11,24,50,79,100].map(size=>{
+        const measure=(family:string)=>{
+          context.font=`400 ${size}px ${family}`
+          const caps=context.measureText('H')
+          const widths=['WB TAXI IS A TAXI BOOKING SERVICE.','WB TAXI — СЕРВИС ДЛЯ ЗАКАЗА ТАКСИ.','HTTPS://CLC.LI/ELHAE'].map(text=>context.measureText(text).width)
+          return {cap:caps.actualBoundingBoxAscent+caps.actualBoundingBoxDescent,widths}
+        }
+        return {size,original:measure('OriginalLegal'),fixed:measure('FrozenLegal')}
+      })
+    },{variable,fixed})
+    for(const sample of result){
+      assert.ok(Math.abs(sample.original.cap-sample.fixed.cap)<.05,JSON.stringify(sample))
+      sample.original.widths.forEach((width,index)=>assert.ok(Math.abs(width-sample.fixed.widths[index]!)<width*.0005+.02,JSON.stringify(sample)))
+    }
+  }finally{await browser.close()}
+})
+
+test('Inter subheading export preserves layout optical size at doubled output resolution', async()=>{
+  const {measureFigmaBanner}=await import('../app/utils/figma-export.ts')
+  const browser=await chromium.launch({headless:true});const page=await browser.newPage()
+  try{
+    const font=(await readFile(new URL('../app/assets/InterVariable.ttf',import.meta.url))).toString('base64')
+    await page.setContent(`<style>@font-face{font-family:InterVariable;src:url(data:font/ttf;base64,${font});font-weight:100 900}#stage,.slot-panel{width:520px;height:260px}.slot-panel{position:relative}.slot-slide{position:absolute;inset:0;background:rgb(255,0,255)}.slide-subheading{font-family:InterVariable;font-weight:550;font-size:27px;font-optical-sizing:auto}</style><div id="stage"><div class="slot-panel"><div class="slot-slide is-active"><div class="slide-content"><p class="slide-subheading">чтобы видеться с близкими чаще</p></div></div></div></div>`)
+    await page.addScriptTag({content:`window.measureBanner=${measureFigmaBanner.toString()}`})
+    const banner=await page.evaluate(()=>(window as any).measureBanner(document.querySelector('#stage'),1040,520))
+    const text=banner.panels[0].layers.find((layer:any)=>layer.name==='Subheading')
+    assert.equal(text.fontSize,54)
+    assert.equal(text.font.variations.opsz,27)
+    assert.equal(text.font.family,'InterVariable')
+  }finally{await browser.close()}
+})
+
+test('Inter web alias resolves to the bundled Inter Variable family, not legacy Inter',async()=>{
+  const {runInNewContext}=await import('node:vm')
+  const source=await readFile(new URL('../figma-plugin/importer.js',import.meta.url),'utf8')
+  const importBanner=runInNewContext(source+'\nimportBanner')
+  const node=()=>({id:'frame',x:0,y:0,width:100,height:20,resize(){},appendChild(){},getStyledTextSegments:()=>[],remove(){}})
+  const figma={listAvailableFontsAsync:async()=>[],getFontFamilyVariationAxes:async(family:string)=>family==='Inter Variable'?['wght','opsz']:null,loadFontAsync:async()=>{},createFrame:node,createText:node,viewport:{center:{x:0,y:0},scrollAndZoomIntoView(){}},currentPage:{children:[]}}
+  const result=await importBanner(figma,{version:1,width:100,height:100,panels:[{name:'Panel',width:100,height:100,x:0,y:0,color:{r:1,g:1,b:1,a:1},layers:[{type:'text',name:'Subheading',text:'ABC',font:{family:'InterVariable',weight:550,variations:{opsz:27}},fontSize:54,lineHeight:65,letterSpacing:0,width:100,x:0,y:0,color:{r:0,g:0,b:0,a:1},opacity:1}]}]})
+  assert.equal(result.fontDiagnostics[0].resolved.family,'Inter Variable')
+  assert.equal(result.fontDiagnostics[0].resolved.variationSettings.opsz,27)
+  assert.equal(result.fontDiagnostics[0].resolved.variationSettings.wght,550)
+})

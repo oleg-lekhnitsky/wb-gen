@@ -32,3 +32,21 @@
   font-display: swap;
   unicode-range: U+0530-058F, U+FB13-FB17;
 }
+
+@font-face {
+  font-family: "WB Resizer Legal";
+  src: url("../GoogleSans-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  unicode-range: U+0530-058F, U+FB13-FB17;
+}
+
+@font-face {
+  font-family: "WB Resizer Legal Condensed";
+  src: url("../GoogleSans-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  unicode-range: U+0530-058F, U+FB13-FB17;
+}

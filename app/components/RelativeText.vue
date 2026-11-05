@@ -5,7 +5,7 @@ import { measureLogoB } from '~/utils/logo-glyph-metrics'
 import { measureGlyphRatio, measureLoadedGlyphRatio } from '~/utils/glyph-metrics'
 import wbMedium from '~/assets/WBSans-Medium.otf?url'
 import wbBold from '~/assets/WBSans-Bold.otf?url'
-import roboto from '~/assets/RobotoFlex.ttf?url'
+import roboto from '~/assets/WBResizerLegalCondensed-Regular.ttf?url'
 import armenian from '~/assets/GoogleSans-Bold.ttf?url'
 const props = defineProps<{ relative?: boolean, ratio?: number, headingSize?: number, kind?: 'legal' | 'subheading' | 'logo' }>()
 const root = ref<HTMLElement | null>(null)
@@ -126,6 +126,7 @@ onBeforeUnmount(() => { ++revision; observer?.disconnect(); resize?.disconnect()
 </script>
 <template>
   <component :is="kind === 'logo' ? 'div' : 'p'" ref="root"
+    :data-relative-legal="relative && kind !== 'logo' && kind !== 'subheading' ? 'true' : undefined"
     :class="kind === 'logo' ? 'slide-logo' : kind === 'subheading' ? 'slide-subheading' : 'slide-legal'"
     :style="{ fontSize: relative ? measuredFontSize : undefined, '--relative-logo-width': relative ? measuredLogoWidth : undefined }"><slot /></component>
 </template>

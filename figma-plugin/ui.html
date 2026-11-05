@@ -1,9 +1,15 @@
-<!doctype html><html><body style="font:13px system-ui;padding:16px"><h3>Import a Resizer banner</h3><p>Choose the JSON downloaded by “Export current slide” in Resizer.</p><input type="file" accept=".json,application/json" id="file"><pre id="status" style="white-space:pre-wrap"></pre><script>
-let source;
+<!doctype html><html><body style="font:13px system-ui;padding:16px"><h3>Import Resizer banners</h3><p>Choose a slide or pack JSON exported from Resizer.</p><input type="file" accept=".json,application/json" id="file"><pre id="status" style="white-space:pre-wrap"></pre><script>
+let source, queue=[], results=[];
 const status=document.querySelector('#status');
-document.querySelector('#file').onchange=async event=>{try{source=JSON.parse(await event.target.files[0].text());parent.postMessage({pluginMessage:{type:'import',data:source}},'*');status.textContent='Importing…'}catch(e){status.textContent=e.message}};
+function importNext(){source=queue.shift();parent.postMessage({pluginMessage:{type:'import',data:source,batchStart:results.length===0,batchEnd:queue.length===0}},'*');status.textContent=`Importing banner ${results.length+1}…`}
+document.querySelector('#file').onchange=async event=>{try{
+ const data=JSON.parse(await event.target.files[0].text());
+ queue=data.type==='pack'?data.banners:[data];results=[];
+ if(!Array.isArray(queue)||!queue.length)throw new Error('The export contains no banners.');
+ document.querySelector('#file').disabled=true;importNext();
+}catch(e){status.textContent=e.message;document.querySelector('#file').disabled=false}};
 async function pixels(src){const img=new Image();img.src=src;await img.decode();const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);return {width:c.width,height:c.height,data:ctx.getImageData(0,0,c.width,c.height).data}}
-onmessage=async event=>{const m=event.data.pluginMessage;if(!m)return;if(m.error){status.textContent=m.error;return}try{
+onmessage=async event=>{const m=event.data.pluginMessage;if(!m)return;if(m.error){status.textContent=m.error;document.querySelector('#file').disabled=false;return}try{
  const result=m.result;
  if(!source.referencePng){result.comparison='Missing browser reference; visual validation incomplete.'}
  else {
@@ -16,6 +22,9 @@ onmessage=async event=>{const m=event.data.pluginMessage;if(!m)return;if(m.error
    result.status=result.warnings.length||!result.comparison.passed?'needs-review':'comparison-passed';
   }finally{URL.revokeObjectURL(url)}
  }
- status.textContent=JSON.stringify(result,null,2);
-}catch(e){status.textContent='Visual comparison failed: '+e.message}};
+ results.push({name:source.name,...result});
+ if(queue.length){importNext();return}
+ status.textContent=JSON.stringify(results.length===1?results[0]:{banners:results},null,2);
+ document.querySelector('#file').disabled=false;
+}catch(e){status.textContent='Visual comparison failed: '+e.message;document.querySelector('#file').disabled=false}};
 </script></body></html>

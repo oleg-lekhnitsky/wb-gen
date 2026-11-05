@@ -1,3 +1,12 @@
+/* Static derivative with the existing legal axes baked into its glyphs. */
+@font-face {
+  font-family: "WB Resizer Legal";
+  src: url("../WBResizerLegal-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 @font-face {
   font-family: "Roboto Flex";
   src: url("../RobotoFlex.ttf") format("truetype-variations");
@@ -9,7 +18,7 @@
 
 :root {
   --legal-current-font: "InterVariable", "Inter", Arial, sans-serif;
-  --legal-roboto-flex-font: "Roboto Flex", "InterVariable", "Inter", Arial, sans-serif;
+  --legal-roboto-flex-font: "WB Resizer Legal", "InterVariable", "Inter", Arial, sans-serif;
   --legal-font-family: var(--legal-current-font);
 
   --legal-font-weight: 400;
@@ -17,20 +26,7 @@
   --legal-letter-spacing: 0;
 
   --legal-font-feature-settings: "kern" 1, "liga" 1, "calt" 1, "pnum" 1;
-  --legal-font-variation-settings:
-    "opsz" 50,
-    "wght" var(--legal-font-weight),
-    "GRAD" 0,
-    "wdth" 25,
-    "slnt" 0,
-    "XOPQ" 96,
-    "YOPQ" 79,
-    "XTRA" 468,
-    "YTUC" 712,
-    "YTLC" 514,
-    "YTAS" 750,
-    "YTDE" -203,
-    "YTFI" 738;
+  --legal-font-variation-settings: normal;
 }
 
 .slide-legal {
@@ -46,4 +42,16 @@
 .slide-legal {
   /* Switch to Roboto Flex by changing this value to var(--legal-roboto-flex-font). */
   --legal-font-family: var(--legal-roboto-flex-font);
+}
+
+@font-face {
+  font-family: "WB Resizer Legal Condensed";
+  src: url("../WBResizerLegalCondensed-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+.slide-legal[data-relative-legal="true"] {
+  --legal-font-family: "WB Resizer Legal Condensed", "InterVariable", "Inter", Arial, sans-serif;
 }

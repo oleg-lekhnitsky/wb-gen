@@ -81,6 +81,9 @@ const props = defineProps<{
   contentLayoutPreset: ContentLayoutPreset
   getContentPlacement: (preset: AspectPreset) => ContentPlacement
   getSharedContent: (preset: AspectPreset) => PreviewSlide | undefined
+  figmaExporting?: boolean
+  figmaProgress?: string
+  figmaError?: string
   renderDisabled?: boolean
   isRendering?: boolean
   renderProgress?: number
@@ -91,6 +94,9 @@ const emit = defineEmits<{
   add: [width: number, height: number, pack?: string]
   addPack: []
   renamePack: [id: string, label: string]
+  downloadFonts: []
+  downloadPlugin: []
+  exportFigmaPack: [presets: AspectPreset[], groupLabel: string]
   renderGroup: [presets: AspectPreset[], groupLabel: string, renderScale: number]
   removePack: [id: string]
   remove: [label: string]
@@ -563,6 +569,18 @@ watch(
       </div>
     </div>
 
+    <div class="figma-pack-actions">
+    <button type="button" class="button button--outline button--compact button--block"
+      :disabled="figmaExporting || isRendering || !visiblePresets.length"
+      @click="emit('exportFigmaPack', visiblePresets, activePackLabel)">
+      {{ figmaExporting ? `Preparing pack… ${figmaProgress || ''}` : 'Export pack to Figma' }}
+    </button>
+    <div class="figma-pack-downloads">
+      <button type="button" class="button button--ghost button--sm" @click="emit('downloadFonts')">Download fonts</button>
+      <button type="button" class="button button--ghost button--sm" @click="emit('downloadPlugin')">Download plugin</button>
+    </div>
+    </div>
+    <small v-if="figmaError" role="alert">{{ figmaError }}</small>
     <AspectGroupRenderControl
       :group-label="activePackLabel"
       :count="visiblePresets.length"

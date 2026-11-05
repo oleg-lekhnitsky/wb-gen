@@ -28,6 +28,23 @@ import UndoShortcut from '~/components/UndoShortcut.vue'
 import packshotAnimationData from '~/assets/packshot.json'
 import defaultLogo from '~/assets/wb taxi.svg'
 import defaultLogoSvg from '~/assets/wb taxi.svg?raw'
+import legalFontUrl from '~/assets/WBResizerLegal-Regular.ttf?url'
+import condensedLegalFontUrl from '~/assets/WBResizerLegalCondensed-Regular.ttf?url'
+import legalFontLicense from '~/assets/RobotoFlex-OFL.txt?raw'
+import wbMediumFontUrl from '~/assets/WBSans-Medium.otf?url'
+import wbBoldFontUrl from '~/assets/WBSans-Bold.otf?url'
+import interFontUrl from '~/assets/InterVariable.ttf?url'
+import interItalicFontUrl from '~/assets/InterVariable-Italic.ttf?url'
+import googleSansFontUrl from '~/assets/GoogleSans-Bold.ttf?url'
+import robotoFlexFontUrl from '~/assets/RobotoFlex.ttf?url'
+import interLicense from '~/assets/Inter-OFL.txt?raw'
+import googleSansLicense from '~/assets/GoogleSans-OFL.txt?raw'
+
+import figmaPluginCode from '../../figma-plugin/code.js?raw'
+import figmaPluginManifest from '../../figma-plugin/manifest.json?raw'
+import figmaPluginUi from '../../figma-plugin/ui.html?raw'
+import figmaPluginReadme from '../../figma-plugin/README.md?raw'
+
 
 type HeadingHighlight = {
   start: number
@@ -258,6 +275,8 @@ const aspectPresets: AspectPreset[] = [
 ]
 const aspectWorkspaceVersion = 1
 const storageKey = 'slot-animation-generator-settings-v1'
+let sessionLoaded = false
+let sessionRestoreFailed = false
 const localRendererPreferenceKey = 'resizer-use-local-renderer-v1'
 const localRendererOrigin = 'http://127.0.0.1:3000'
 const runtimeConfig = useRuntimeConfig()
@@ -3141,6 +3160,107 @@ function closeSlideCapture() {
 
 const figmaExportStatus = ref<'idle' | 'exporting' | 'done' | 'error'>('idle')
 const figmaExportError = ref('')
+const figmaExportProgress = ref('')
+async function prepareCurrentSlideForFigma() {
+  await nextTick()
+  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+  const stage = document.querySelector<HTMLElement>('.slot-stage--main')
+  if (!stage) throw new Error('The banner preview is unavailable.')
+  packshotAnimation?.pause()
+  const banner = await measureFigmaBanner(stage, exportWidth.value, exportHeight.value)
+  const settings = currentSlideSnapshot(getCurrentSettings(), selectedIndex.value)
+  settings.showPackshotOnFinalSlide = banner.panels.some(panel => panel.name === 'Packshot')
+  if (settings.showPackshotOnFinalSlide && packshotAnimation) {
+    settings.packshotStartFrame = Math.round(packshotAnimation.currentFrame)
+    settings.packshotEndFrame = settings.packshotStartFrame
+  }
+  const reference = await requestCurrentSlidePng(settings)
+  const referencePng = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = reject
+    reader.readAsDataURL(reference)
+  })
+  return { ...banner, settings, referencePng }
+}
+
+async function downloadFigmaFonts() {
+  try {
+    const files = await Promise.all([
+      { name: 'WBSans-Medium.otf', url: wbMediumFontUrl },
+      { name: 'WBSans-Bold.otf', url: wbBoldFontUrl },
+      { name: 'InterVariable.ttf', url: interFontUrl },
+      { name: 'InterVariable-Italic.ttf', url: interItalicFontUrl },
+      { name: 'GoogleSans-Bold.ttf', url: googleSansFontUrl },
+      { name: 'RobotoFlex.ttf', url: robotoFlexFontUrl },
+      { name: 'WBResizerLegal-Regular.ttf', url: legalFontUrl },
+      { name: 'WBResizerLegalCondensed-Regular.ttf', url: condensedLegalFontUrl }
+    ].map(async font => {
+      const response = await fetch(font.url)
+      if (!response.ok) throw new Error('Could not download the legal font.')
+      return { name: font.name, data: new Uint8Array(await response.arrayBuffer()) }
+    }))
+    files.push({ name: 'RobotoFlex-OFL.txt', data: new TextEncoder().encode(legalFontLicense) })
+    files.push({ name: 'Inter-OFL.txt', data: new TextEncoder().encode(interLicense) })
+    files.push({ name: 'GoogleSans-OFL.txt', data: new TextEncoder().encode(googleSansLicense) })
+    files.push({ name: 'INSTALL.txt', data: new TextEncoder().encode('Install all included OTF and TTF files on the computer running Figma, then restart Figma. WB Sans is used for headings and buttons; Inter for subheadings; Google Sans Bold for Armenian; WB Resizer Legal for independent legal sizing; WB Resizer Legal Condensed for relative sizing. Roboto Flex supports older exports. Inter 4.1 matches the version loaded by the app. Re-export older JSON files to use the fixed legal fonts.') })
+    downloadBlob(createZip(files), 'resizer-fonts.zip')
+  } catch (error) {
+    figmaExportError.value = error instanceof Error ? error.message : 'Font download failed.'
+    figmaExportStatus.value = 'error'
+  }
+}
+
+function downloadFigmaPlugin() {
+  const files = [
+    { name: 'manifest.json', text: figmaPluginManifest },
+    { name: 'code.js', text: figmaPluginCode },
+    { name: 'ui.html', text: figmaPluginUi },
+    { name: 'README.md', text: figmaPluginReadme },
+    { name: 'INSTALL.txt', text: 'Extract this ZIP. In Figma Desktop choose Plugins > Development > Import plugin from manifest, then select manifest.json. Run Resizer Banner Import and choose the JSON exported from Resizer. Install the legal fonts from the Download fonts button first.' }
+  ].map(file => ({ name: file.name, data: new TextEncoder().encode(file.text) }))
+  downloadBlob(createZip(files), 'resizer-figma-plugin.zip')
+}
+
+async function exportPackToFigma(presets: AspectPreset[], groupLabel: string) {
+  if (figmaExportStatus.value === 'exporting' || !presets.length) return
+  const original = { width: aspectWidth.value, height: aspectHeight.value, exportWidth: exportWidth.value, exportHeight: exportHeight.value, label: activeAspectLabel.value }
+  const index = selectedIndex.value
+  const wasPlaying = isPlaying.value
+  const packshotWasPaused = packshotAnimation?.isPaused ?? true
+  figmaExportStatus.value = 'exporting'
+  figmaExportError.value = ''
+  cancelTextAnimationReset()
+  isPlaying.value = false
+  clearTimeout(autoplayTimer)
+  snapToSlide(index)
+  try {
+    const banners = []
+    for (const [position, preset] of presets.entries()) {
+      figmaExportProgress.value = `${position + 1} / ${presets.length}`
+      setAspectRatio(preset)
+      activeIndex.value = index
+      isSnappingSlides.value = true
+      banners.push(await prepareCurrentSlideForFigma())
+    }
+    const pack = { version: 1, type: 'pack', name: groupLabel, banners }
+    downloadBlob(new Blob([JSON.stringify(pack)], { type: 'application/json' }), `${sanitizeRenderName(groupLabel)}-slide-${index + 1}.figma.json`)
+    figmaExportStatus.value = 'done'
+  } catch (error) {
+    figmaExportError.value = error instanceof Error ? error.message : 'Figma pack export failed.'
+    figmaExportStatus.value = 'error'
+  } finally {
+    setAspectRatio(original)
+    activeIndex.value = index
+    selectedIndex.value = index
+    isSnappingSlides.value = false
+    figmaExportProgress.value = ''
+    if (!packshotWasPaused) packshotAnimation?.play()
+    isPlaying.value = wasPlaying
+    restartAutoplay()
+  }
+}
+
 async function exportCurrentSlideToFigma() {
   if (figmaExportStatus.value === 'exporting') return
   const wasPlaying = isPlaying.value
@@ -3154,26 +3274,7 @@ async function exportCurrentSlideToFigma() {
   activeIndex.value = selectedIndex.value
   isSnappingSlides.value = true
   try {
-    await nextTick()
-    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
-    const stage = document.querySelector<HTMLElement>('.slot-stage--main')
-    if (!stage) throw new Error('The banner preview is unavailable.')
-    packshotAnimation?.pause()
-    const banner = await measureFigmaBanner(stage, exportWidth.value, exportHeight.value)
-    const settings = currentSlideSnapshot(getCurrentSettings(), selectedIndex.value)
-    settings.showPackshotOnFinalSlide = banner.panels.some(panel => panel.name === 'Packshot')
-    if (settings.showPackshotOnFinalSlide && packshotAnimation) {
-      settings.packshotStartFrame = Math.round(packshotAnimation.currentFrame)
-      settings.packshotEndFrame = settings.packshotStartFrame
-    }
-    const reference = await requestCurrentSlidePng(settings)
-    const referencePng = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(String(reader.result))
-      reader.onerror = reject
-      reader.readAsDataURL(reference)
-    })
-    const data = { ...banner, name: `Slide ${selectedIndex.value + 1} / ${banner.name}`, settings, referencePng }
+    const data = await prepareCurrentSlideForFigma()
     downloadBlob(new Blob([JSON.stringify(data)], { type: 'application/json' }), `slide-${selectedIndex.value + 1}-${exportWidth.value}x${exportHeight.value}.figma.json`)
     figmaExportStatus.value = 'done'
   } catch (error) {
@@ -3851,6 +3952,12 @@ async function writeSettingsToIndexedDb(serializedSettings: string) {
   return new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(settingsStoreName, 'readwrite')
     const store = transaction.objectStore(settingsStoreName)
+    const previous = store.get(settingsRecordKey)
+    previous.addEventListener('success', () => {
+      if (typeof previous.result === 'string' && previous.result !== serializedSettings) {
+        store.put(previous.result, 'previous')
+      }
+    })
     store.put(serializedSettings, settingsRecordKey)
 
     transaction.addEventListener('complete', () => {
@@ -3868,48 +3975,27 @@ async function writeSettingsToIndexedDb(serializedSettings: string) {
   })
 }
 
-async function removeSettingsFromIndexedDb() {
-  const database = await openSettingsDatabase()
-
-  return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(settingsStoreName, 'readwrite')
-    const store = transaction.objectStore(settingsStoreName)
-    store.delete(settingsRecordKey)
-
-    transaction.addEventListener('complete', () => {
-      database.close()
-      resolve()
-    })
-    transaction.addEventListener('abort', () => {
-      database.close()
-      reject(transaction.error)
-    })
-    transaction.addEventListener('error', () => {
-      database.close()
-      reject(transaction.error)
-    })
-  })
-}
-
 async function loadSettings() {
+  sessionLoaded = false
+  sessionRestoreFailed = false
   try {
     if (window.__slotAnimationRenderSettings) {
       applySettings(window.__slotAnimationRenderSettings)
       window.__slotAnimationRenderSettingsLoaded = true
       return
     }
-
     const saved = await readSettingsFromIndexedDb()
       .catch(() => localStorage.getItem(storageKey))
       || localStorage.getItem(storageKey)
-    if (!saved) return
-
-    const settings = JSON.parse(saved) as Partial<PersistedSettings>
-    applySettings(settings)
-    void writeSettingsToIndexedDb(saved)
-  } catch {
-    localStorage.removeItem(storageKey)
-    void removeSettingsFromIndexedDb()
+    if (saved) {
+      applySettings(JSON.parse(saved) as Partial<PersistedSettings>)
+    }
+  } catch (error) {
+    // Keep the original record intact; defaults must never replace a failed restore.
+    sessionRestoreFailed = true
+    console.error('Unable to restore the saved session. Original storage was preserved.', error)
+  } finally {
+    sessionLoaded = true
   }
 }
 
@@ -3996,6 +4082,8 @@ function createLocalStorageFallbackSettings(settings: PersistedSettings): Persis
 }
 
 async function saveSettings() {
+  // HMR can unmount a fresh instance while its IndexedDB restore is still pending.
+  if (!sessionLoaded || sessionRestoreFailed || window.__slotAnimationRenderSettings) return
   const settings = getCurrentSettings()
   const serializedSettings = JSON.stringify(settings)
 
@@ -4050,6 +4138,8 @@ function importPreset(data: unknown) {
     }
 
     applySettings(settings)
+    sessionRestoreFailed = false
+    sessionLoaded = true
     saveSettings()
   } catch (error) {
     exportError.value = error instanceof Error
@@ -4194,6 +4284,13 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
     </div>
     <UndoShortcut @undo="undoLastChange" />
       <AspectPreviewGrid
+        :inert="figmaExportStatus === 'exporting'"
+        :figma-exporting="figmaExportStatus === 'exporting'"
+        :figma-progress="figmaExportProgress"
+        :figma-error="figmaExportError"
+        @export-figma-pack="exportPackToFigma"
+        @download-fonts="downloadFigmaFonts"
+        @download-plugin="downloadFigmaPlugin"
         :presets="allAspectPresets"
         :packs="allAspectPacks"
         :active-width="aspectWidth"
