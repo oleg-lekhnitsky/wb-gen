@@ -75,7 +75,7 @@ test('format placement defaults, validation and size keys', async () => {
   const { defaultContentPlacement, normalizeContentPlacement, placementKey, placementClasses } = await import('../app/utils/content-placement.ts')
   assert.deepEqual(defaultContentPlacement(360, 640), { copy:'first', logo:'first', cta:'second', legal:'second', background1:'first', background2:'second' })
   assert.equal(defaultContentPlacement(728, 90).cta, 'first')
-  assert.notEqual(placementKey(250,250), placementKey(320,320), 'different sizes retain independent placement even at the same ratio')
+  assert.notEqual(placementKey(250,250), placementKey(320,320), 'exact dimension keys remain available for backward-compatible migration')
   assert.deepEqual(normalizeContentPlacement({logo:'second',cta:'hidden',legal:'invalid'},360,640), {copy:'first',logo:'second',cta:'second',legal:'second',background1:'first',background2:'second'})
   assert.deepEqual(placementClasses({copy:'first',logo:'first',cta:'second',legal:'hidden'},'second'), {'hide-copy':true,'hide-logo':true,'hide-cta':false,'hide-legal':true})
   const placement=defaultContentPlacement(360,640)
@@ -529,4 +529,29 @@ test('Inter web alias resolves to the bundled Inter Variable family, not legacy 
   assert.equal(result.fontDiagnostics[0].resolved.family,'Inter Variable')
   assert.equal(result.fontDiagnostics[0].resolved.variationSettings.opsz,27)
   assert.equal(result.fontDiagnostics[0].resolved.variationSettings.wght,550)
+})
+
+
+test('placement is shared by aspect ratio across packs and migrates exact-size settings', async()=>{
+  const {placementRatioKey,placementKey,migratePlacementRatios,defaultContentPlacement}=await import('../app/utils/content-placement.ts')
+  assert.equal(placementRatioKey(1080,1080),placementRatioKey(300,300))
+  assert.equal(placementRatioKey(1920,1080),placementRatioKey(1280,720))
+  assert.notEqual(placementRatioKey(1080,1920),placementRatioKey(1920,1080))
+  assert.notEqual(placementKey(300,300),placementKey(1080,1080))
+  const a={...defaultContentPlacement(1080,1080),logo:'second' as const}
+  const b={...a,logo:'first' as const}
+  assert.equal(migratePlacementRatios({'300x300':b,'1080x1080':a},1080,1080)['1:1']!.logo,'second')
+  assert.equal(migratePlacementRatios({'1080x1080':a,'1:1':b},1080,1080)['1:1']!.logo,'first')
+})
+
+
+test('banner typography and background settings migrate to shared aspect-ratio keys',async()=>{
+  const {migrateRatioSettings,placementRatioKey}=await import('../app/utils/content-placement.ts')
+  const square={headingSize:150,logoWidth:40,backgroundImageX:35,textAlign:'center'}
+  const settings=migrateRatioSettings({'1080x1080':square,'300x300':{...square,headingSize:100},'1920x1080':{...square,headingSize:75}},1080,1080)
+  assert.equal(settings[placementRatioKey(250,250)]!.headingSize,150)
+  assert.equal(settings[placementRatioKey(300,300)]!.textAlign,'center')
+  assert.equal(settings[placementRatioKey(1280,720)]!.headingSize,75)
+  assert.equal(settings[placementRatioKey(250,250)]!.backgroundImageX,35)
+  assert.deepEqual(Object.keys(settings).sort(),['16:9','1:1'])
 })

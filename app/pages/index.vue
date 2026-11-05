@@ -14,7 +14,7 @@ import CopySlidePng from '~/components/CopySlidePng.vue'
 import CtaControls from '~/components/CtaControls.vue'
 import DraggableBackground from '~/components/DraggableBackground.vue'
 import ContentPlacementControls from '~/components/ContentPlacementControls.vue'
-import { backgroundSource, normalizeContentPlacement, placementClasses, placementKey } from '~/utils/content-placement'
+import { backgroundSource, normalizeContentPlacement, placementClasses, placementRatioKey, migratePlacementRatios, migrateRatioSettings } from '~/utils/content-placement'
 import type { ContentPlacement, ContentLayoutPreset } from '~/utils/content-placement'
 import LogoControls from '~/components/LogoControls.vue'
 import PresetControls from '~/components/PresetControls.vue'
@@ -681,7 +681,7 @@ const contentStyleKeys = new Set<string>(Object.values(contentStyleGroups).flat(
 function getFormatContent(index: number, width = exportWidth.value, height = exportHeight.value): Slide {
   const content = { ...(sharedContentSlides.value[index] ?? panelSlides.value.left[index] ?? createSlide('left', index)) }
   const placement = getFormatPlacement(width, height)
-  const fields = placementKey(width, height) === placementKey(exportWidth.value, exportHeight.value) ? panelSlides.value : (aspectSlideSettings.value[placementKey(width, height)] ?? aspectSlideSettings.value[getAspectKey(width, height)])
+  const fields = getAspectKey(width, height) === getAspectKey() ? panelSlides.value : aspectSlideSettings.value[getAspectKey(width, height)]
   for (const [group, keys] of Object.entries(contentStyleGroups)) {
     const target = placement[group as keyof typeof contentStyleGroups]
     const side = (target === 'second') !== isFormatSwapped(width, height) ? 'right' : 'left'
@@ -732,7 +732,7 @@ function isFormatSwapped(width: number, height: number) {
   return height >= width ? swapVerticalPanels.value : width / height >= 4 ? swapUltraNarrowPanels.value : swapHorizontalPanels.value
 }
 function getFormatPlacement(width = exportWidth.value, height = exportHeight.value) {
-  return normalizeContentPlacement(aspectContentPlacements.value[placementKey(width, height)], width, height, isFormatSwapped(width,height))
+  return normalizeContentPlacement(aspectContentPlacements.value[placementRatioKey(width, height)], width, height, isFormatSwapped(width,height))
 }
 function getBackgroundSourceSide(destination: PanelSide) {
   return backgroundSource(currentContentPlacement.value, destination === getVisualStartSide() ? 'first' : 'second')
@@ -754,7 +754,7 @@ const currentContentPlacement = computed({
         Object.assign(panelSlides.value[side][index]!, { [key]: content[key as keyof Slide] })
       }
     }
-    aspectContentPlacements.value[placementKey(exportWidth.value, exportHeight.value)] = { ...value }
+    aspectContentPlacements.value[placementRatioKey(exportWidth.value, exportHeight.value)] = { ...value }
   }
 })
 function getContentPlacementClasses(side: PanelSide, index: number) {
@@ -763,7 +763,7 @@ function getContentPlacementClasses(side: PanelSide, index: number) {
 }
 function applyPlacementToPack(pack: string) {
   for (const preset of allAspectPresets.value.filter(preset => preset.pack === pack)) {
-    aspectContentPlacements.value[placementKey(preset.exportWidth, preset.exportHeight)] = { ...currentContentPlacement.value }
+    aspectContentPlacements.value[placementRatioKey(preset.exportWidth, preset.exportHeight)] = { ...currentContentPlacement.value }
   }
   saveSettings()
 }
@@ -789,7 +789,7 @@ function getAspectKey(width = aspectWidth.value, height = aspectHeight.value) {
 }
 
 function normalizeAspectKey(key: string) {
-  const parts = key.split(':')
+  const parts = key.split(/[x:]/)
   const width = Number.parseInt(parts[0] ?? '', 10)
   const height = Number.parseInt(parts[1] ?? '', 10)
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
@@ -905,12 +905,11 @@ function captureAspectSlideSettings(): AspectSlideSettings {
 
 function storeCurrentAspectSettings() {
   aspectSlideSettings.value[getAspectKey()] = captureAspectSlideSettings()
-  aspectSlideSettings.value[placementKey(exportWidth.value, exportHeight.value)] = captureAspectSlideSettings()
   aspectPackshotWidths.value[getAspectKey()] = normalizePackshotWidth(packshotWidth.value)
 }
 
 function applyAspectSlideSettings(key: string) {
-  const settings = aspectSlideSettings.value[placementKey(exportWidth.value, exportHeight.value)] ?? aspectSlideSettings.value[key]
+  const settings = aspectSlideSettings.value[key]
 
   if (!settings) {
     aspectSlideSettings.value[key] = captureAspectSlideSettings()
@@ -944,8 +943,8 @@ function applyAspectSettings(key: string) {
 function getAspectPreviewSlides(preset: AspectPreset): { left: Slide, right: Slide } {
   const index = Math.min(activeIndex.value, panelSlides.value.left.length - 1)
   const key = getAspectKey(preset.width, preset.height)
-  const isCurrentFormat = placementKey(preset.exportWidth, preset.exportHeight) === placementKey(exportWidth.value, exportHeight.value)
-  const settings = isCurrentFormat ? undefined : (aspectSlideSettings.value[placementKey(preset.exportWidth, preset.exportHeight)] ?? aspectSlideSettings.value[key])
+  const isCurrentFormat = getAspectKey(preset.exportWidth, preset.exportHeight) === getAspectKey()
+  const settings = isCurrentFormat ? undefined : aspectSlideSettings.value[key]
   const leftSlide = panelSlides.value.left[index] ?? createSlide('left', index)
   const rightSlide = panelSlides.value.right[index] ?? createSlide('right', index)
 
@@ -1618,7 +1617,7 @@ function applySelectedTextToAspectRatios() {
     ...Object.keys(aspectSlideSettings.value),
     ...quickAspectPresets.map(preset => getAspectKey(preset.width, preset.height)),
     ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height)),
-    ...allAspectPresets.value.map(preset => placementKey(preset.exportWidth, preset.exportHeight))
+    ...allAspectPresets.value.map(preset => getAspectKey(preset.exportWidth, preset.exportHeight))
   ])
 
   for (const key of aspectKeys) {
@@ -1648,7 +1647,7 @@ function applySelectedLogoToAspectRatios() {
     ...Object.keys(aspectSlideSettings.value),
     ...quickAspectPresets.map(preset => getAspectKey(preset.width, preset.height)),
     ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height)),
-    ...allAspectPresets.value.map(preset => placementKey(preset.exportWidth, preset.exportHeight))
+    ...allAspectPresets.value.map(preset => getAspectKey(preset.exportWidth, preset.exportHeight))
   ])
 
   for (const key of aspectKeys) {
@@ -1683,7 +1682,7 @@ function applySelectedCtaToAspectRatios() {
     ...Object.keys(aspectSlideSettings.value),
     ...quickAspectPresets.map(preset => getAspectKey(preset.width, preset.height)),
     ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height)),
-    ...allAspectPresets.value.map(preset => placementKey(preset.exportWidth, preset.exportHeight))
+    ...allAspectPresets.value.map(preset => getAspectKey(preset.exportWidth, preset.exportHeight))
   ])
 
   for (const key of aspectKeys) {
@@ -3713,13 +3712,13 @@ function normalizeAspectSlideSettings(value: unknown): Record<string, AspectSlid
       continue
     }
 
-    nextSettings[normalizeAspectKey(key)] = {
+    nextSettings[key] = {
       left: candidate.left.map(normalizeAspectSlideFields),
       right: candidate.right.map(normalizeAspectSlideFields)
     }
   }
 
-  return nextSettings
+  return migrateRatioSettings(nextSettings, exportWidth.value, exportHeight.value)
 }
 
 function normalizeAspectPackshotWidths(value: unknown): Record<string, number> {
@@ -3808,10 +3807,12 @@ function applySettings(settings: Partial<PersistedSettings>) {
     motionBlurIntensity.value = Math.max(0, Math.min(100, settings.motionBlurIntensity))
   }
   sharedContentSlides.value = Array.isArray(settings.sharedContentSlides) ? settings.sharedContentSlides.filter(isValidSlide).map(normalizeSlide) : []
+  const migratedPlacements = migratePlacementRatios(settings.aspectContentPlacements || {}, settings.exportWidth ?? exportWidth.value, settings.exportHeight ?? exportHeight.value)
   aspectContentPlacements.value = {}
-  for (const [key, value] of Object.entries(settings.aspectContentPlacements || {})) {
-    const match = key.match(/^(\d+)x(\d+)$/)
-    if (match) aspectContentPlacements.value[key] = normalizeContentPlacement(value, Number(match[1]), Number(match[2]), Number(match[2]) >= Number(match[1]) ? Boolean(settings.swapVerticalPanels) : Number(match[1]) / Number(match[2]) >= 4 ? Boolean(settings.swapUltraNarrowPanels) : Boolean(settings.swapHorizontalPanels))
+  for (const [key, value] of Object.entries(migratedPlacements)) {
+    const [width, height] = key.split(':').map(Number) as [number, number]
+    const swapped = height >= width ? Boolean(settings.swapVerticalPanels) : width / height >= 4 ? Boolean(settings.swapUltraNarrowPanels) : Boolean(settings.swapHorizontalPanels)
+    aspectContentPlacements.value[key] = normalizeContentPlacement(value, width, height, swapped)
   }
   setContentLayoutPreset('per-format')
   if (typeof settings.exportFps === 'number') {
