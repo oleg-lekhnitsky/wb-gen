@@ -17,6 +17,7 @@ function fitArtwork() {
   if(svg && box && box.width>0 && box.height>0)svg.setAttribute('viewBox',`${box.x} ${box.y} ${box.width} ${box.height}`)
 }
 function sync() {
+  if ((window as any).__slotAnimationVideoCapture) { animation?.pause(); return }
   const slide=root.value?.closest('.slot-slide')
   const snapping=Boolean(root.value?.closest('.is-snapping, .aspect-preview-card__design'))
   if(snapping) {
@@ -76,6 +77,14 @@ onMounted(async()=>{
     // Align the animation's settled artwork to the static logo bounds.
     fitArtwork()
     animation!.addEventListener('complete',()=>{animation!.goToAndStop(30,true)})
+    if ((window as any).__slotAnimationVideoCapture && root.value) {
+      playing.value=true
+      ;(root.value as any).__seekBrandLogo=(progress:number)=>{
+        fitArtwork()
+        animation!.goToAndStop(30*Math.max(0,Math.min(1,progress)),true)
+      }
+      root.value.dataset.logoReady='true'
+    }
     active=false
     sync()
   })

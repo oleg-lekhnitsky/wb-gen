@@ -306,6 +306,7 @@ export default defineEventHandler(async event => {
     await page.addInitScript(
       ({ key, value }) => {
         ;(window as Window & { __slotAnimationRenderSettings?: unknown }).__slotAnimationRenderSettings = JSON.parse(value)
+        ;(window as any).__slotAnimationVideoCapture = true
         try {
           localStorage.setItem(key, value)
         } catch {}
@@ -336,6 +337,7 @@ export default defineEventHandler(async event => {
       undefined,
       { timeout: 5000 }
     ).catch(() => {})
+    await page.waitForFunction(() => [...document.querySelectorAll<HTMLElement>('.slot-stage--main .animated-brand-logo')].every(logo => logo.dataset.logoReady === 'true'))
     await page.addStyleTag({
       content: `
         .editor-right-sidebar, .animation-controls, .preview-toolbar, .aspect-preview-control {
@@ -388,6 +390,12 @@ export default defineEventHandler(async event => {
         [data-nuxt-devtools], [data-v-inspector],
         iframe[src*="devtools"], #nuxt-devtools-container { display: none !important; visibility: hidden !important; }
         .slot-slide { transition: none !important; }
+        .slot-stage--main .animated-brand-logo { transition: none !important; }
+        .slot-stage--main .animated-copy-word[class*="has-heading-highlight--"] { color: var(--video-highlight-ink, inherit) !important; }
+        .slot-stage--main .animated-copy-word[class*="has-heading-highlight--"]::before {
+          transform: scaleX(var(--video-highlight-progress, 1)) !important;
+          transition: none !important;
+        }
       `
     })
     await page.waitForFunction(() =>
@@ -407,6 +415,15 @@ export default defineEventHandler(async event => {
       })))
     })
     await assertExportAssetsReady(page)
+    const animationSettleMs = await page.evaluate((transitionMs) => {
+      const timing = (style: CSSStyleDeclaration, name: string) => Number.parseFloat(style.getPropertyValue(name)) || 0
+      return Math.max(transitionMs, ...Array.from(document.querySelectorAll<HTMLElement>('.slot-stage--main .slide-copy.has-line-transition .animated-copy-word')).map(unit => {
+        const style = getComputedStyle(unit)
+        const entrance = timing(style, '--word-delay') + timing(style, '--copy-enter-delay') + timing(style, '--copy-enter-duration')
+        const highlight = unit.className.includes('has-heading-highlight--') ? timing(style, '--highlight-delay') + timing(style, '--highlight-stagger') + 300 : 0
+        return Math.max(entrance, highlight)
+      }))
+    }, settings.transitionSeconds * 1000)
     const stage = page.locator('.slot-stage--main')
     const portrait = settings.aspectHeight >= settings.aspectWidth
     const ultraNarrow = !portrait && settings.aspectWidth / settings.aspectHeight >= 4
@@ -452,8 +469,8 @@ export default defineEventHandler(async event => {
       const rawProgress = transition
         ? Math.min(1, (localTime - currentPause) / settings.transitionSeconds)
         : 0
-      const currentEntryProgress = !transition && currentIndex > 0 && settings.transitionSeconds > 0
-        ? 1 + localTime / settings.transitionSeconds
+      const currentEntryProgress = !transition && settings.transitionSeconds > 0
+        ? (currentIndex > 0 ? 1 : 0) + localTime / settings.transitionSeconds
         : 1
       const progress = transition
         ? cubicBezier(
@@ -482,8 +499,11 @@ export default defineEventHandler(async event => {
         settings.packshotPlayback === 'loop'
         || packshotProgress < 1
       )
+      const currentEntryMs = (currentIndex > 0 ? settings.transitionSeconds : 0) * 1000 + localTime * 1000
+      const animationSettled = currentEntryMs >= animationSettleMs
       const canReuseStaticFrame = (
-        !transition
+        animationSettled
+        && !transition
         && slideHasOnlyStaticMedia(settings, currentIndex)
         && !packshotMoving
       )
@@ -616,8 +636,25 @@ export default defineEventHandler(async event => {
                 || unit.style.getPropertyValue('--line-delay')
               ) || 0
               const styles = window.getComputedStyle(unit)
-              const duration = Number.parseFloat(styles.getPropertyValue('--copy-duration')) || transitionSeconds * 1000
-              const unitProgress = easeCopyProgress((timelineProgress * transitionSeconds * 1000 - delay) / Math.max(1, duration))
+              const enterDelay = mode === 'entering' ? Number.parseFloat(styles.getPropertyValue('--copy-enter-delay')) || 0 : 0
+              const duration = Number.parseFloat(styles.getPropertyValue(mode === 'entering' ? '--copy-enter-duration' : '--copy-duration')) || transitionSeconds * 1000
+              const elapsedMs = timelineProgress * transitionSeconds * 1000
+              const unitProgress = easeCopyProgress((elapsedMs - delay - enterDelay) / Math.max(1, duration))
+              if (unit.className.includes('has-heading-highlight--')) {
+                const highlightDelay = (Number.parseFloat(styles.getPropertyValue('--highlight-delay')) || transitionSeconds * 1000)
+                  + (Number.parseFloat(styles.getPropertyValue('--highlight-stagger')) || 0)
+                const highlight = mode === 'hidden' ? 0 : mode === 'entering' ? easeCopyProgress((elapsedMs - highlightDelay) / 300) : 1
+                const ink = mode === 'hidden' ? 0 : mode === 'entering' ? easeCopyProgress((elapsedMs - highlightDelay) / 150) : 1
+                unit.style.setProperty('--video-highlight-progress', String(highlight))
+                const base = getComputedStyle(unit.closest('.slide-content')!).color
+                const probe = document.createElement('span')
+                probe.style.color = styles.getPropertyValue('--heading-highlight-color')
+                document.body.appendChild(probe)
+                const target = getComputedStyle(probe).color
+                probe.remove()
+                const from = base.match(/[\d.]+/g)!.map(Number), to = target.match(/[\d.]+/g)!.map(Number)
+                unit.style.setProperty('--video-highlight-ink', `rgb(${from.slice(0,3).map((channel,index)=>channel+(to[index]-channel)*ink).join(',')})`)
+              }
               const visibility = mode === 'visible'
                 ? 1
                 : mode === 'hidden'
@@ -640,6 +677,13 @@ export default defineEventHandler(async event => {
                     : `translate${axis}(${enterOffset * direction}px)`
             })
           }
+          const setBrandLogos = (slide: HTMLElement | undefined, mode: 'hidden' | 'entering' | 'visible', timeline = rawProgress) => {
+            slide?.querySelectorAll<HTMLElement>('.animated-brand-logo').forEach(logo => {
+              const progress = mode === 'hidden' ? 0 : mode === 'entering' ? clamp(timeline) : 1
+              ;(logo as any).__seekBrandLogo?.(progress)
+              logo.style.opacity = String(mode === 'hidden' ? 0 : mode === 'entering' ? easeCopyProgress(timeline / .6) : 1)
+            })
+          }
           const setCtaTransition = (
             slide: HTMLElement | undefined,
             opacity: number,
@@ -659,6 +703,7 @@ export default defineEventHandler(async event => {
               slide.classList.toggle('is-active', !transition && index === currentIndex)
               slide.classList.toggle('is-leaving', transition && index === currentIndex)
               setCopyUnits(slide, 'hidden')
+              setBrandLogos(slide, 'hidden')
               setCtaTransition(slide, 0, 1.25)
             })
             const current = panel?.querySelectorAll<HTMLElement>('.slot-slide')[currentIndex]
@@ -681,9 +726,10 @@ export default defineEventHandler(async event => {
               current.style.transform = portrait ? 'scaleX(1)' : 'scaleY(1)'
               setCopyUnits(
                 current,
-                currentIndex > 0 ? 'entering' : 'visible',
+                'entering',
                 currentEntryProgress
               )
+              setBrandLogos(current, 'entering', currentEntryProgress)
               setCtaTransition(current, 1, 0)
             } else {
               if (next) {
@@ -695,6 +741,7 @@ export default defineEventHandler(async event => {
                   ? `scaleX(${progress})`
                   : `scaleY(${progress})`
                 setCopyUnits(next, 'entering')
+                setBrandLogos(next, 'entering')
                 setCtaTransition(next, progress, (1 - progress) * 1.25)
               }
               if (current) {
@@ -706,6 +753,7 @@ export default defineEventHandler(async event => {
                   ? `scaleX(${1 - progress})`
                   : `scaleY(${1 - progress})`
                 setCopyUnits(current, 'leaving')
+                setBrandLogos(current, 'visible')
                 setCtaTransition(current, 1 - progress, -progress * 1.25)
               }
             }

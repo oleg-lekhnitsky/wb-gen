@@ -100,6 +100,7 @@ const emit = defineEmits<{
   downloadFonts: []
   downloadPlugin: []
   exportFigmaPack: [presets: AspectPreset[], groupLabel: string]
+  packChange: [label: string]
   renderGroup: [presets: AspectPreset[], groupLabel: string, renderScale: number]
   removePack: [id: string]
   remove: [label: string]
@@ -148,6 +149,7 @@ const visiblePresets = computed(() => {
 const activePackLabel = computed(() =>
   props.packs?.find(pack => pack.id === activePack.value)?.label || 'Aspects'
 )
+watch(activePackLabel, label => emit('packChange', label), { immediate: true })
 
 function isActive(preset: AspectPreset) {
   return props.activeWidth === preset.width && props.activeHeight === preset.height

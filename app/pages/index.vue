@@ -5,6 +5,7 @@ import { measureFigmaBanner } from '~/utils/figma-export'
 import { logoWidthForApplyAll } from '~/utils/logo-width'
 import { currentSlideSnapshot } from '~/utils/current-slide-snapshot'
 import { useCanvasViewport } from '~/composables/useCanvasViewport'
+import { motionEasingPresets, defaultMotionCurve } from '~/utils/motion-easing'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AnimatedSlideCopy from '~/components/AnimatedSlideCopy.vue'
 import AnimatedBrandLogo from '~/components/AnimatedBrandLogo.vue'
@@ -196,6 +197,7 @@ type PersistedSettings = {
 
 declare global {
   interface Window {
+    __removePlaybackShortcut?: () => void
     __packshotAnimation?: AnimationItem | null
     __slotAnimationRenderSettings?: Partial<PersistedSettings>
     __slotAnimationRenderSettingsLoaded?: boolean
@@ -320,16 +322,13 @@ const transitionSeconds = ref(0.65)
 const pauseSeconds = ref(2.35)
 const firstPauseSeconds = ref(2.35)
 const packshotPauseSeconds = ref(2.35)
-const curve = ref({
-  x1: 0.76,
-  y1: 0,
-  x2: 0.24,
-  y2: 1
-})
+const curve = ref({ ...defaultMotionCurve })
 const exportWidth = ref(1920)
 const exportHeight = ref(1080)
 const exportFps = ref(30)
 const exportPrefix = ref('slot-animation')
+const selectedExportPackLabel = ref('Custom')
+const videoExportPrefix = computed(() => `${sanitizeRenderName(selectedExportPackLabel.value)}_${exportWidth.value}x${exportHeight.value}`)
 const exportFormat = ref<'png' | 'mp4'>('mp4')
 const aspectWidth = ref(16)
 const aspectHeight = ref(9)
@@ -1210,7 +1209,7 @@ function showNextSlide() {
 function restartAutoplay() {
   clearTimeout(autoplayTimer)
 
-  if (!isPlaying.value) return
+  if (!isPlaying.value || (window as any).__slotAnimationVideoCapture) return
 
   autoplayTimer = setTimeout(() => {
     showNextSlide()
@@ -1311,20 +1310,41 @@ function snapToSlide(index = selectedIndex.value) {
   })
 }
 
+let playbackSpaceHeld = false
+let componentDisposed = false
+let removePlaybackShortcut: (() => void) | undefined
+function releasePlaybackSpace() { playbackSpaceHeld = false }
 function handlePlaybackShortcut(event: KeyboardEvent) {
-  if (isSlideCapture.value) return
-  if (event.code !== 'Space') return
-
+  if (isSlideCapture.value || (event.code !== 'Space' && event.key !== ' ')) return
+  if (event.type === 'keyup') {
+    if (!playbackSpaceHeld) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    releasePlaybackSpace()
+    return
+  }
   const target = event.target as HTMLElement | null
-  const isEditing = target?.matches(
-    'input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, select'
-  )
-
-  if (isEditing || target?.isContentEditable) return
-
+  const textField = target?.closest?.<HTMLInputElement | HTMLTextAreaElement>('input:not([type]), input[type="text"], input[type="search"], input[type="email"], input[type="url"], input[type="tel"], input[type="password"], textarea')
+  if ((textField && !textField.readOnly && !textField.disabled) || target?.isContentEditable) return
   event.preventDefault()
   event.stopImmediatePropagation()
-  if (!event.repeat) togglePlayback()
+  if (!event.repeat && sessionLoaded) togglePlayback()
+  playbackSpaceHeld = true
+}
+
+function installPlaybackShortcut() {
+  window.__removePlaybackShortcut?.()
+  window.addEventListener('keydown', handlePlaybackShortcut, true)
+  window.addEventListener('keyup', handlePlaybackShortcut, true)
+  window.addEventListener('blur', releasePlaybackSpace)
+  removePlaybackShortcut = () => {
+    window.removeEventListener('keydown', handlePlaybackShortcut, true)
+    window.removeEventListener('keyup', handlePlaybackShortcut, true)
+    window.removeEventListener('blur', releasePlaybackSpace)
+    releasePlaybackSpace()
+    if (window.__removePlaybackShortcut === removePlaybackShortcut) delete window.__removePlaybackShortcut
+  }
+  window.__removePlaybackShortcut = removePlaybackShortcut
 }
 
 function selectSlide(index: number) {
@@ -3255,7 +3275,9 @@ async function renderSequence() {
 
   try {
     storeCurrentAspectSettings()
-    const prefix = exportPrefix.value.trim().replace(/[^\w-]+/g, '-') || 'frame'
+    const prefix = exportFormat.value === 'mp4'
+      ? `${sanitizeRenderName(selectedExportPackLabel.value)}_${width}x${height}`
+      : exportPrefix.value.trim().replace(/[^\w-]+/g, '-') || 'frame'
     if (
       exportFormat.value === 'png'
       && contentLayoutPreset.value !== 'per-format'
@@ -4077,14 +4099,15 @@ function scheduleSave() {
 }
 
 onMounted(async () => {
+  installPlaybackShortcut()
   await loadSettings()
+  if (componentDisposed) return
   useLocalRenderer.value = localStorage.getItem(localRendererPreferenceKey) === 'true'
   if (useLocalRenderer.value) void checkLocalRenderer()
   if (remoteRendererOrigin) void checkRemoteRenderer()
   recordUndoSnapshot()
   initPackshotAnimation()
   restartAutoplay()
-  window.addEventListener('keydown', handlePlaybackShortcut, true)
 
   watch(
     [
@@ -4133,6 +4156,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  componentDisposed = true
+  removePlaybackShortcut?.()
   document.body.classList.remove('is-slide-capture')
   clearInterval(autoplayTimer)
   clearTimeout(transitionTimer)
@@ -4146,7 +4171,6 @@ onBeforeUnmount(() => {
   packshotAnimation?.destroy()
   packshotAnimation = null
   window.__packshotAnimation = null
-  window.removeEventListener('keydown', handlePlaybackShortcut, true)
   saveSettings()
 })
 
@@ -4181,6 +4205,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount, isPlayin
         @export-figma-pack="exportPackToFigma"
         @download-fonts="downloadFigmaFonts"
         @download-plugin="downloadFigmaPlugin"
+        @pack-change="selectedExportPackLabel = $event"
         :presets="allAspectPresets"
         :packs="allAspectPacks"
         :active-width="aspectWidth"
@@ -4860,10 +4885,11 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount, isPlayin
 
         <div class="control-field curve-control">
           <label>Transition curve</label>
-          <div class="curve-presets">
-            <button class="button button--secondary" type="button" @click="setCurve(0.25, 0.1, 0.25, 1)">Ease</button>
-            <button class="button button--secondary" type="button" @click="setCurve(0.42, 0, 0.58, 1)">In out</button>
-            <button class="button button--secondary" type="button" @click="setCurve(0.76, 0, 0.24, 1)">Snappy</button>
+          <div class="curve-presets" role="group" aria-label="Motion easing presets">
+            <button v-for="preset in motionEasingPresets" :key="preset.label"
+              class="button button--secondary" :class="{ 'is-selected': preset.values.every((value, index) => value === [curve.x1, curve.y1, curve.x2, curve.y2][index]) }"
+              :aria-pressed="preset.values.every((value, index) => value === [curve.x1, curve.y1, curve.x2, curve.y2][index])"
+              type="button" @click="setCurve(...preset.values)">{{ preset.label }}</button>
           </div>
 
           <div class="curve-editor">
@@ -4971,7 +4997,8 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount, isPlayin
           </label>
           <label>
             Filename
-            <input v-model="exportPrefix" type="text" placeholder="slot-animation">
+            <input v-if="exportFormat === 'mp4'" :value="videoExportPrefix" type="text" readonly>
+            <input v-else v-model="exportPrefix" type="text" placeholder="slot-animation">
           </label>
         </div>
 

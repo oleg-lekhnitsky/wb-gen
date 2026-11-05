@@ -25,3 +25,17 @@ test('default layouts retain the supplied three-slide pack and use generic copy'
   const photo=await readFile(new URL('../app/assets/default-layout-photo.png',import.meta.url))
   assert.equal(photo.subarray(1,4).toString(),'PNG')
 })
+
+
+test('default animation uses the approved preset 5 timing',async()=>{
+  const settings=JSON.parse(await readFile(new URL('../app/assets/default-layout-settings.json',import.meta.url),'utf8'))
+  assert.equal(settings.transitionSeconds,1.4)
+  assert.equal(settings.pauseSeconds,5.55)
+  assert.equal(settings.firstPauseSeconds,.3)
+  assert.equal(settings.packshotPauseSeconds,1.35)
+  assert.equal(settings.packshotStartOffsetSeconds,.45)
+  assert.equal(settings.packshotDurationSeconds,1)
+  assert.equal(settings.textLineTransition,true)
+  assert.equal(settings.motionBlur,false)
+  assert.equal(settings.loopSlides,false)
+})
