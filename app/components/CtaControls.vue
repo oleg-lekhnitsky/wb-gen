@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { cleanTextPaste } from '~/utils/text-paste'
 defineProps<{
   text?: string
   size?: number
   pulse?: boolean
   align?: 'left' | 'right'
   bottomMargin?: boolean
+  autoBottomMargin?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -40,6 +42,7 @@ function rangeStyle(value: number | undefined, min: number, max: number) {
       <label for="cta-text">Button text <span>optional</span></label>
       <input
         id="cta-text"
+        @paste="cleanTextPaste"
         :value="text"
         placeholder="Add CTA"
         @input="emit('update:text', ($event.target as HTMLInputElement).value)"
@@ -47,16 +50,21 @@ function rangeStyle(value: number | undefined, min: number, max: number) {
     </div>
 
     <div class="text-size-control">
-      <label>
-        <span>Alignment</span>
-        <select
-          :value="align || 'right'"
-          @change="emit('update:align', ($event.target as HTMLSelectElement).value as 'left' | 'right')"
-        >
-          <option value="left">Left</option>
-          <option value="right">Right</option>
-        </select>
-      </label>
+      <div class="text-size-control-field">
+        <span id="cta-alignment-label">Alignment</span>
+        <div class="placement-buttons" role="group" aria-labelledby="cta-alignment-label">
+          <button
+            v-for="side in (['left', 'right'] as const)"
+            :key="side"
+            type="button"
+            :aria-pressed="(align || 'right') === side"
+            :class="{ 'is-selected': (align || 'right') === side }"
+            @click="emit('update:align', side)"
+          >
+            {{ side === 'left' ? 'Left' : 'Right' }}
+          </button>
+        </div>
+      </div>
 
       <label>
         <span>Button size</span>
@@ -86,7 +94,9 @@ function rangeStyle(value: number | undefined, min: number, max: number) {
       <label class="text-shadow-toggle">
         <span>Bottom margin</span>
         <input
-          :checked="bottomMargin"
+          :checked="bottomMargin || autoBottomMargin"
+          :disabled="autoBottomMargin"
+          :title="autoBottomMargin ? 'Applied automatically above legal text' : undefined"
           type="checkbox"
           @change="emit('update:bottomMargin', ($event.target as HTMLInputElement).checked)"
         >

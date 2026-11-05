@@ -1,0 +1,34 @@
+/* Keep the existing script-specific stacks; Armenian always uses Google Sans Bold.
+   The CSS aliases let mixed-script text retain the existing Latin/Cyrillic faces. */
+@font-face {
+  font-family: "WBSans";
+  src: url("../GoogleSans-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  unicode-range: U+0530-058F, U+FB13-FB17;
+}
+@font-face {
+  font-family: "WBSans";
+  src: url("../GoogleSans-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  unicode-range: U+0530-058F, U+FB13-FB17;
+}
+@font-face {
+  font-family: "InterVariable";
+  src: url("../GoogleSans-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+0530-058F, U+FB13-FB17;
+}
+@font-face {
+  font-family: "Roboto Flex";
+  src: url("../GoogleSans-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+0530-058F, U+FB13-FB17;
+}

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { chromium } from 'playwright'
+import { assertExportAssetsReady } from '../utils/export-contract'
 
 type RenderSlide = {
   backgroundImage?: unknown
@@ -20,6 +21,7 @@ type RenderSettings = {
   transitionSeconds: number
   pauseSeconds: number
   firstPauseSeconds: number
+  packshotPauseSeconds?: number
   curve: {
     x1: number
     y1: number
@@ -37,7 +39,7 @@ type RenderSettings = {
   textLineTransition?: boolean
   motionBlur?: boolean
   motionBlurIntensity?: number
-  contentLayoutPreset?: 'stacked' | 'adaptive-split'
+  contentLayoutPreset?: 'stacked' | 'adaptive-split' | 'per-format'
   swapVerticalPanels: boolean
   swapHorizontalPanels?: boolean
   swapUltraNarrowPanels?: boolean
@@ -246,11 +248,13 @@ export default defineEventHandler(async event => {
   const firstPause = Number.isFinite(settings.firstPauseSeconds)
     ? settings.firstPauseSeconds
     : settings.pauseSeconds
+  const slidePause = (index: number) => settings.showPackshotOnFinalSlide && index === slideCount - 1
+    ? Math.max(0, Math.min(10, settings.packshotPauseSeconds ?? settings.pauseSeconds))
+    : index === 0 ? firstPause : settings.pauseSeconds
   const loopSlides = settings.loopSlides === true
   const transitionCount = loopSlides ? slideCount : Math.max(0, slideCount - 1)
   const duration =
-    firstPause
-    + settings.pauseSeconds * Math.max(0, slideCount - 1)
+    Array.from({ length: slideCount }, (_, index) => slidePause(index)).reduce((sum, pause) => sum + pause, 0)
     + settings.transitionSeconds * transitionCount
   const frameCount = Math.max(1, Math.round(duration * fps))
   if (!slideCount || frameCount > 1200 || width * height * frameCount > 900_000_000) {
@@ -334,7 +338,7 @@ export default defineEventHandler(async event => {
     ).catch(() => {})
     await page.addStyleTag({
       content: `
-        .animation-controls, .preview-toolbar, .aspect-preview-control {
+        .editor-right-sidebar, .animation-controls, .preview-toolbar, .aspect-preview-control {
           visibility: hidden !important;
           pointer-events: none !important;
         }
@@ -360,8 +364,11 @@ export default defineEventHandler(async event => {
           overflow: visible !important;
           border-radius: 0 !important;
         }
+        .canvas-viewport { display: contents !important; }
         .stage-zoom-frame,
         .stage-zoom-frame.is-portrait {
+          position: static !important;
+          transform: none !important;
           --stage-preview-zoom: 1 !important;
           width: ${renderWidth}px !important;
           height: ${renderHeight}px !important;
@@ -399,6 +406,7 @@ export default defineEventHandler(async event => {
         video.addEventListener('error', () => resolve(), { once: true })
       })))
     })
+    await assertExportAssetsReady(page)
     const stage = page.locator('.slot-stage--main')
     const portrait = settings.aspectHeight >= settings.aspectWidth
     const ultraNarrow = !portrait && settings.aspectWidth / settings.aspectHeight >= 4
@@ -410,7 +418,7 @@ export default defineEventHandler(async event => {
     const segmentDurations = Array.from(
       { length: slideCount },
       (_, index) => {
-        const pause = index === 0 ? firstPause : settings.pauseSeconds
+        const pause = slidePause(index)
         const hasTransition = loopSlides || index < slideCount - 1
         return pause + (hasTransition ? settings.transitionSeconds : 0)
       }
@@ -437,7 +445,7 @@ export default defineEventHandler(async event => {
         segmentStart = segmentEnd
       }
       const localTime = time - segmentStart
-      const currentPause = currentIndex === 0 ? firstPause : settings.pauseSeconds
+      const currentPause = slidePause(currentIndex)
       const hasTransition = loopSlides || currentIndex < slideCount - 1
       const nextIndex = hasTransition ? (currentIndex + 1) % slideCount : currentIndex
       const transition = hasTransition && localTime >= currentPause && settings.transitionSeconds > 0
@@ -607,8 +615,9 @@ export default defineEventHandler(async event => {
                 unit.style.getPropertyValue('--word-delay')
                 || unit.style.getPropertyValue('--line-delay')
               ) || 0
-              const delayRatio = transitionSeconds > 0 ? delay / (transitionSeconds * 1000) : 0
-              const unitProgress = easeCopyProgress(timelineProgress - delayRatio)
+              const styles = window.getComputedStyle(unit)
+              const duration = Number.parseFloat(styles.getPropertyValue('--copy-duration')) || transitionSeconds * 1000
+              const unitProgress = easeCopyProgress((timelineProgress * transitionSeconds * 1000 - delay) / Math.max(1, duration))
               const visibility = mode === 'visible'
                 ? 1
                 : mode === 'hidden'
@@ -616,21 +625,19 @@ export default defineEventHandler(async event => {
                   : mode === 'entering'
                     ? unitProgress
                     : 1 - unitProgress
-              const styles = window.getComputedStyle(unit)
-              const enterOffset = Number.parseFloat(styles.getPropertyValue('--copy-enter-offset')) || 2.35
-              const leaveOffset = Number.parseFloat(styles.getPropertyValue('--copy-leave-offset')) || -2.25
+              const enterOffset = Number.parseFloat(styles.getPropertyValue('--copy-enter-offset')) || 32
+              const leaveOffset = Number.parseFloat(styles.getPropertyValue('--copy-leave-offset')) || -32
               const axis = portrait ? 'X' : 'Y'
-              const enterDirection = portrait ? -1 : 1
-              const leaveDirection = portrait ? -1 : 1
+              const direction = portrait ? -1 : 1
 
               unit.style.opacity = String(visibility)
               unit.style.transform = mode === 'entering'
-                ? `translate${axis}(${(1 - visibility) * enterOffset * enterDirection}em)`
+                ? `translate${axis}(${(1 - visibility) * enterOffset * direction}px)`
                 : mode === 'leaving'
-                  ? `translate${axis}(${unitProgress * leaveOffset * leaveDirection}em)`
+                  ? `translate${axis}(${unitProgress * leaveOffset * direction}px)`
                   : visibility > 0
-                    ? `translate${axis}(0)`
-                    : `translate${axis}(${enterOffset * enterDirection}em)`
+                    ? `translate${axis}(0px)`
+                    : `translate${axis}(${enterOffset * direction}px)`
             })
           }
           const setCtaTransition = (

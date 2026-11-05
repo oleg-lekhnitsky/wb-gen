@@ -1,5 +1,22 @@
 # Nuxt Minimal Starter
 
+Banner rendering and Figma import changes must follow the [export contract](EXPORT_CONTRACT.md).
+
+Use **Export current slide** to download only the selected banner as editable-layer JSON. Import it with the
+[local Figma plugin](figma-plugin/README.md).
+
+Use **Placement** to enter shared slide content once and
+assign headline/subheading, logo, CTA, legal, and each complete background to either panel. Empty content inputs hide their elements automatically.
+Placement is saved by output width × height. Switching formats restores it.
+**Apply placement to pack** copies the current first/second-panel assignments
+to the selected pack. Background 1 and Background 2 retain their own color/pattern, media, crop, and fade; choosing an occupied panel swaps their placements. Placement is the only layout mode; older
+saved presets are opened using per-format placement.
+Text content stays shared, while heading, subheading, CTA, legal and logo sizing
+are saved independently for each banner size and slide. Background selection
+does not affect these controls. Moving content preserves its sizing; use
+**Apply to all** to deliberately copy styling across formats.
+
+
 Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
 
 ## Setup
@@ -99,3 +116,13 @@ NUXT_PUBLIC_RENDERER_ORIGIN=https://your-renderer.up.railway.app
 ```
 
 The deployed editor tries the local renderer first when explicitly enabled, then the configured Railway renderer. Railway responses send periodic heartbeat frames so long renders stay connected through its public proxy. If Railway is configured but unavailable, the editor reports the connection error instead of retrying a large render through Vercel. The same-origin API remains the fallback only when no remote renderer is configured.
+
+Auto-fit heading balances whole words within the space left after padding,
+subheading, logo, CTA and legal content. The heading-size slider sets its maximum
+font size; manual line breaks are preserved. Both browser exports and editable
+Figma exports use the resulting rendered lines.
+
+The center canvas supports trackpad pinch (or Ctrl/Cmd + wheel) to zoom around
+the pointer, two-finger scrolling to pan, and middle-mouse or empty-area dragging.
+**Fit** recenters the banner at 100%. Playback, zoom and timeline controls stay
+pinned; canvas navigation does not change exported dimensions.

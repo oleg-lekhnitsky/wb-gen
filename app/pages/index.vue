@@ -1,13 +1,21 @@
 <script setup lang="ts">
+import RelativeText from '~/components/RelativeText.vue'
 import type { AnimationItem } from 'lottie-web'
+import { measureFigmaBanner } from '~/utils/figma-export'
+import { logoWidthForApplyAll } from '~/utils/logo-width'
+import { currentSlideSnapshot } from '~/utils/current-slide-snapshot'
+import { useCanvasViewport } from '~/composables/useCanvasViewport'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AnimatedSlideCopy from '~/components/AnimatedSlideCopy.vue'
+import AnimatedBrandLogo from '~/components/AnimatedBrandLogo.vue'
 import AspectPreviewGrid from '~/components/AspectPreviewGrid.vue'
 import BackgroundSelector from '~/components/BackgroundSelector.vue'
 import CopySlidePng from '~/components/CopySlidePng.vue'
 import CtaControls from '~/components/CtaControls.vue'
 import DraggableBackground from '~/components/DraggableBackground.vue'
-import LayoutControls from '~/components/LayoutControls.vue'
+import ContentPlacementControls from '~/components/ContentPlacementControls.vue'
+import { backgroundSource, normalizeContentPlacement, placementClasses, placementKey } from '~/utils/content-placement'
+import type { ContentPlacement, ContentLayoutPreset } from '~/utils/content-placement'
 import LogoControls from '~/components/LogoControls.vue'
 import PresetControls from '~/components/PresetControls.vue'
 import SlideEditActions from '~/components/SlideEditActions.vue'
@@ -39,10 +47,13 @@ type Slide = {
   bottomFade?: boolean
   heading: string
   headingHighlights?: HeadingHighlight[]
+  textAlign?: 'left' | 'center'
   headingSize: number
   headingAutoScale?: boolean
   subheading: string
   subheadingSize: number
+  subheadingRelative?: boolean
+  subheadingHeadingRatio?: number
   ctaText?: string
   ctaSize?: number
   ctaPulse?: boolean
@@ -53,6 +64,8 @@ type Slide = {
   logoHeight: number
   legalText: string
   legalSize: number
+  legalRelative?: boolean
+  legalHeadingRatio?: number
   legalOpacity: number
   legalShadow: boolean
   legalShadowOpacity: number
@@ -63,9 +76,12 @@ type AspectSlideFields = Pick<
   Slide,
   | 'heading'
   | 'headingHighlights'
+  | 'textAlign'
   | 'headingSize'
   | 'headingAutoScale'
   | 'subheading'
+  | 'subheadingRelative'
+  | 'subheadingHeadingRatio'
   | 'subheadingSize'
   | 'ctaText'
   | 'ctaSize'
@@ -76,6 +92,8 @@ type AspectSlideFields = Pick<
   | 'logoWidth'
   | 'logoHeight'
   | 'legalText'
+  | 'legalRelative'
+  | 'legalHeadingRatio'
   | 'legalSize'
   | 'legalOpacity'
   | 'legalShadow'
@@ -88,7 +106,6 @@ type AspectSlideFields = Pick<
 type AspectSlideSettings = Record<PanelSide, AspectSlideFields[]>
 type PackshotRenderer = 'canvas' | 'svg'
 type PackshotPlayback = 'once' | 'loop'
-type ContentLayoutPreset = 'stacked' | 'adaptive-split'
 type AspectPreset = {
   label: string
   width: number
@@ -118,6 +135,7 @@ type PersistedSettings = {
   transitionSeconds: number
   pauseSeconds: number
   firstPauseSeconds: number
+  packshotPauseSeconds?: number
   curve: {
     x1: number
     y1: number
@@ -136,6 +154,8 @@ type PersistedSettings = {
   textLineTransition?: boolean
   motionBlur?: boolean
   motionBlurIntensity?: number
+  sharedContentSlides?: Slide[]
+  aspectContentPlacements?: Record<string, ContentPlacement>
   contentLayoutPreset?: ContentLayoutPreset
   swapVerticalPanels: boolean
   swapHorizontalPanels?: boolean
@@ -432,6 +452,7 @@ const requestedSlideCount = ref(4)
 const transitionSeconds = ref(0.65)
 const pauseSeconds = ref(2.35)
 const firstPauseSeconds = ref(2.35)
+const packshotPauseSeconds = ref(2.35)
 const curve = ref({
   x1: 0.76,
   y1: 0,
@@ -450,7 +471,9 @@ const narrowHorizontalAnimation = ref(false)
 const textLineTransition = ref(false)
 const motionBlur = ref(false)
 const motionBlurIntensity = ref(50)
-const contentLayoutPreset = ref<ContentLayoutPreset>('stacked')
+const contentLayoutPreset = ref<ContentLayoutPreset>('per-format')
+const sharedContentSlides = ref<Slide[]>([])
+const aspectContentPlacements = ref<Record<string, ContentPlacement>>({})
 const swapVerticalPanels = ref(false)
 const swapHorizontalPanels = ref(false)
 const swapUltraNarrowPanels = ref(false)
@@ -482,9 +505,12 @@ let packshotAnimation: AnimationItem | null = null
 let packshotTransitionFrame: number | undefined
 let packshotStartTimer: ReturnType<typeof setTimeout> | undefined
 let packshotAnimationReady = false
+let packshotProgress = 0
 
 let autoplayTimer: ReturnType<typeof setInterval> | undefined
 let transitionTimer: ReturnType<typeof setTimeout> | undefined
+let textAnimationResetVersion = 0
+let snapVersion = 0
 let textAnimationResetFrame: number | undefined
 let textAnimationPlayFrame: number | undefined
 let saveTimer: ReturnType<typeof setTimeout> | undefined
@@ -507,10 +533,14 @@ const motionBlurStrength = computed(() => (
 ))
 const motionTrailDelayMs = computed(() => 1 + motionBlurStrength.value * 2)
 const motionTrailOpacity = computed(() => motionBlurStrength.value * 0.08)
+function getSlidePause(index: number) {
+  if (showPackshotOnFinalSlide.value && index === slideCount.value - 1) return packshotPauseSeconds.value
+  return index === 0 ? firstPauseSeconds.value : pauseSeconds.value
+}
 const intervalDuration = computed(
   () => (
     (leavingIndex.value !== null ? transitionSeconds.value : 0)
-    + (activeIndex.value === 0 ? firstPauseSeconds.value : pauseSeconds.value)
+    + getSlidePause(activeIndex.value)
   ) * 1000
 )
 const totalDuration = computed(
@@ -520,8 +550,7 @@ const totalDuration = computed(
       : Math.max(0, slideCount.value - 1)
 
     return (
-      firstPauseSeconds.value
-      + pauseSeconds.value * Math.max(0, slideCount.value - 1)
+      Array.from({ length: slideCount.value }, (_, index) => getSlidePause(index)).reduce((sum, pause) => sum + pause, 0)
       + transitionSeconds.value * transitionCount
     )
   }
@@ -552,6 +581,7 @@ function getVisualStartSide(): PanelSide {
 }
 
 function getLayoutContentSlide(side: PanelSide, index: number): Slide {
+  if (contentLayoutPreset.value === 'per-format') return getFormatContent(index)
   if (contentLayoutPreset.value !== 'adaptive-split') {
     return panelSlides.value[side][index] ?? createSlide(side, index)
   }
@@ -600,24 +630,7 @@ function getPanelLabel(side: PanelSide) {
 
 const panelLabel = computed(() => getPanelLabel(selectedPanel.value))
 
-const panelSwapButtonLabel = computed(() => {
-  if (isUltraNarrow.value) return 'Swap Narrow Left / Right'
-  return isPortrait.value ? 'Swap Top / Bottom' : 'Swap Left / Right'
-})
 
-function togglePanelSwap() {
-  if (isUltraNarrow.value) {
-    swapUltraNarrowPanels.value = !swapUltraNarrowPanels.value
-    return
-  }
-
-  if (isPortrait.value) {
-    swapVerticalPanels.value = !swapVerticalPanels.value
-    return
-  }
-
-  swapHorizontalPanels.value = !swapHorizontalPanels.value
-}
 const easingValue = computed(
   () => `cubic-bezier(${curve.value.x1}, ${curve.value.y1}, ${curve.value.x2}, ${curve.value.y2})`
 )
@@ -636,6 +649,105 @@ const secondHandle = computed(() => ({
 const selectedSlide = computed(
   () => panelSlides.value[selectedPanel.value][selectedIndex.value]
 )
+const contentPanel = computed(() => contentLayoutPreset.value === 'adaptive-split'
+  ? getVisualStartSide()
+  : selectedPanel.value)
+const contentStyleGroups = {
+  copy: ['textAlign', 'headingSize', 'headingAutoScale', 'subheadingSize', 'subheadingRelative', 'subheadingHeadingRatio'],
+  logo: ['logoWidth', 'logoHeight'],
+  cta: ['ctaSize', 'ctaPulse', 'ctaAlign', 'ctaBottomMargin'],
+  legal: ['legalRelative', 'legalHeadingRatio', 'legalSize', 'legalOpacity', 'legalShadow', 'legalShadowOpacity']
+} as const
+const contentStyleKeys = new Set<string>(Object.values(contentStyleGroups).flat())
+function getFormatContent(index: number, width = exportWidth.value, height = exportHeight.value): Slide {
+  const content = { ...(sharedContentSlides.value[index] ?? panelSlides.value.left[index] ?? createSlide('left', index)) }
+  const placement = getFormatPlacement(width, height)
+  const fields = placementKey(width, height) === placementKey(exportWidth.value, exportHeight.value) ? panelSlides.value : (aspectSlideSettings.value[placementKey(width, height)] ?? aspectSlideSettings.value[getAspectKey(width, height)])
+  for (const [group, keys] of Object.entries(contentStyleGroups)) {
+    const target = placement[group as keyof typeof contentStyleGroups]
+    const side = (target === 'second') !== isFormatSwapped(width, height) ? 'right' : 'left'
+    const source = fields?.[side]?.[index]
+    for (const key of keys) if (source?.[key] !== undefined) Object.assign(content, { [key]: source[key] })
+  }
+  // Relative sizing now has one shared switch. Migrate older per-element modes
+  // so an enabled legal setting also enables the subheading (and vice versa).
+  const relative = !!(content.subheadingRelative || content.legalRelative)
+  content.subheadingRelative = relative
+  content.legalRelative = relative
+  return content
+}
+const selectedContentSlide = computed(() => {
+  if (contentLayoutPreset.value !== 'per-format') return panelSlides.value[contentPanel.value][selectedIndex.value]
+  return new Proxy(getFormatContent(selectedIndex.value), {
+    set(_target, key, value) {
+      if (typeof key !== 'string') return false
+      if (contentStyleKeys.has(key)) {
+        for (const side of panelSides) Object.assign(panelSlides.value[side][selectedIndex.value]!, { [key]: value })
+      } else Object.assign(sharedContentSlides.value[selectedIndex.value]!, { [key]: value })
+      return true
+    }
+  })
+})
+function initializeSharedContent() {
+  for (let i = sharedContentSlides.value.length; i < panelSlides.value.left.length; i++) {
+    const left = panelSlides.value.left[i]!, right = panelSlides.value.right[i]!
+    const cta = left.ctaText ? left : right
+    const legal = left.legalText ? left : right
+    const logo = left.logo ? left : right
+    sharedContentSlides.value.push({ ...left, headingHighlights: [...(left.headingHighlights || [])],
+      heading: left.heading || right.heading, subheading: left.subheading || right.subheading,
+      logo: left.logo || right.logo, ctaText: left.ctaText || right.ctaText, legalText: left.legalText || right.legalText,
+      logoWidth: logo.logoWidth, logoHeight: logo.logoHeight,
+      ctaSize: cta.ctaSize, ctaAlign: cta.ctaAlign, ctaPulse: cta.ctaPulse, ctaBottomMargin: cta.ctaBottomMargin,
+      legalRelative: legal.legalRelative, legalHeadingRatio: legal.legalHeadingRatio, legalSize: legal.legalSize, legalOpacity: legal.legalOpacity, legalShadow: legal.legalShadow, legalShadowOpacity: legal.legalShadowOpacity })
+  }
+}
+function setContentLayoutPreset(value: ContentLayoutPreset) {
+  if (value === 'per-format') initializeSharedContent()
+  contentLayoutPreset.value = value
+}
+// Initialize fresh sessions before the content controls first render.
+initializeSharedContent()
+
+function isFormatSwapped(width: number, height: number) {
+  return height >= width ? swapVerticalPanels.value : width / height >= 4 ? swapUltraNarrowPanels.value : swapHorizontalPanels.value
+}
+function getFormatPlacement(width = exportWidth.value, height = exportHeight.value) {
+  return normalizeContentPlacement(aspectContentPlacements.value[placementKey(width, height)], width, height, isFormatSwapped(width,height))
+}
+function getBackgroundSourceSide(destination: PanelSide) {
+  return backgroundSource(currentContentPlacement.value, destination === getVisualStartSide() ? 'first' : 'second')
+}
+function emptyBackground(slide: Slide): Slide {
+  return { ...slide, backgroundImage:'', backgroundColor:'transparent', backgroundPreset:'solid', bottomFade:false }
+}
+function getRenderedPanelSlides(destination: PanelSide) {
+  const source = getBackgroundSourceSide(destination)
+  return source ? panelSlides.value[source] : panelSlides.value[destination].map(emptyBackground)
+}
+const currentContentPlacement = computed({
+  get: () => getFormatPlacement(),
+  set: (value: ContentPlacement) => {
+    // Keep typography attached to the content when moving it to another panel.
+    for (let index = 0; index < sharedContentSlides.value.length; index++) {
+      const content = getFormatContent(index)
+      for (const side of panelSides) for (const key of contentStyleKeys) {
+        Object.assign(panelSlides.value[side][index]!, { [key]: content[key as keyof Slide] })
+      }
+    }
+    aspectContentPlacements.value[placementKey(exportWidth.value, exportHeight.value)] = { ...value }
+  }
+})
+function getContentPlacementClasses(side: PanelSide, index: number) {
+  return contentLayoutPreset.value === 'per-format'
+    ? placementClasses(currentContentPlacement.value, side === getVisualStartSide() ? 'first' : 'second', getFormatContent(index)) : {}
+}
+function applyPlacementToPack(pack: string) {
+  for (const preset of allAspectPresets.value.filter(preset => preset.pack === pack)) {
+    aspectContentPlacements.value[placementKey(preset.exportWidth, preset.exportHeight)] = { ...currentContentPlacement.value }
+  }
+  saveSettings()
+}
 const copySlideStatus = ref<'idle' | 'copying' | 'copied' | 'error'>('idle')
 let copySlideStatusTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -737,9 +849,12 @@ function getAspectSlideFields(slide: Slide): AspectSlideFields {
     bottomFade: slide.bottomFade ?? false,
     heading: slide.heading,
     headingHighlights: normalizeHeadingHighlights(slide.headingHighlights, slide.heading),
+    textAlign: slide.textAlign ?? 'left',
     headingSize: slide.headingSize,
     headingAutoScale: slide.headingAutoScale ?? false,
     subheading: slide.subheading,
+    subheadingRelative: slide.subheadingRelative ?? false,
+    subheadingHeadingRatio: slide.subheadingHeadingRatio ?? 50,
     subheadingSize: slide.subheadingSize,
     ctaText: slide.ctaText || '',
     ctaSize: slide.ctaSize ?? 100,
@@ -750,6 +865,8 @@ function getAspectSlideFields(slide: Slide): AspectSlideFields {
     logoWidth: slide.logoWidth,
     logoHeight: slide.logoHeight,
     legalText: slide.legalText,
+    legalRelative: slide.legalRelative ?? false,
+    legalHeadingRatio: slide.legalHeadingRatio ?? 50,
     legalSize: slide.legalSize,
     legalOpacity: slide.legalOpacity,
     legalShadow: slide.legalShadow,
@@ -769,11 +886,12 @@ function captureAspectSlideSettings(): AspectSlideSettings {
 
 function storeCurrentAspectSettings() {
   aspectSlideSettings.value[getAspectKey()] = captureAspectSlideSettings()
+  aspectSlideSettings.value[placementKey(exportWidth.value, exportHeight.value)] = captureAspectSlideSettings()
   aspectPackshotWidths.value[getAspectKey()] = normalizePackshotWidth(packshotWidth.value)
 }
 
 function applyAspectSlideSettings(key: string) {
-  const settings = aspectSlideSettings.value[key]
+  const settings = aspectSlideSettings.value[placementKey(exportWidth.value, exportHeight.value)] ?? aspectSlideSettings.value[key]
 
   if (!settings) {
     aspectSlideSettings.value[key] = captureAspectSlideSettings()
@@ -807,12 +925,12 @@ function applyAspectSettings(key: string) {
 function getAspectPreviewSlides(preset: AspectPreset): { left: Slide, right: Slide } {
   const index = Math.min(activeIndex.value, panelSlides.value.left.length - 1)
   const key = getAspectKey(preset.width, preset.height)
-  const currentKey = getAspectKey()
-  const settings = key === currentKey ? undefined : aspectSlideSettings.value[key]
+  const isCurrentFormat = placementKey(preset.exportWidth, preset.exportHeight) === placementKey(exportWidth.value, exportHeight.value)
+  const settings = isCurrentFormat ? undefined : (aspectSlideSettings.value[placementKey(preset.exportWidth, preset.exportHeight)] ?? aspectSlideSettings.value[key])
   const leftSlide = panelSlides.value.left[index] ?? createSlide('left', index)
   const rightSlide = panelSlides.value.right[index] ?? createSlide('right', index)
 
-  return {
+  const sources = {
     left: {
       ...leftSlide,
       ...(settings?.left?.[index] || {})
@@ -822,6 +940,13 @@ function getAspectPreviewSlides(preset: AspectPreset): { left: Slide, right: Sli
       ...(settings?.right?.[index] || {})
     }
   }
+  const placement = getFormatPlacement(preset.exportWidth, preset.exportHeight)
+  const swap = isFormatSwapped(preset.width, preset.height)
+  const pick = (panel: 'first' | 'second', fallback: Slide) => {
+    const source = backgroundSource(placement, panel)
+    return source ? sources[source] : emptyBackground(fallback)
+  }
+  return { left:pick(swap?'second':'first',sources.left), right:pick(swap?'first':'second',sources.right) }
 }
 
 function setAspectRatio(preset: AspectPreset) {
@@ -1039,6 +1164,8 @@ function updateSlideCount(value: number) {
     }
   }
 
+  sharedContentSlides.value.splice(nextCount)
+  if (contentLayoutPreset.value === 'per-format') initializeSharedContent()
   clearTimeout(transitionTimer)
   leavingIndex.value = null
   activeIndex.value = Math.min(activeIndex.value, nextCount - 1)
@@ -1062,6 +1189,7 @@ function insertSlideAt(insertIndex: number) {
     }
   }
 
+  if (sharedContentSlides.value.length) sharedContentSlides.value.splice(insertIndex, 0, createSlide('left', insertIndex))
   requestedSlideCount.value = slideCount.value
   clearTimeout(transitionTimer)
   leavingIndex.value = null
@@ -1076,6 +1204,7 @@ function removeSelectedSlide() {
   storeCurrentAspectSettings()
   const removeIndex = Math.min(selectedIndex.value, slideCount.value - 1)
   const nextIndex = Math.min(removeIndex, slideCount.value - 2)
+  sharedContentSlides.value.splice(removeIndex, 1)
 
   for (const side of panelSides) {
     panelSlides.value[side].splice(removeIndex, 1)
@@ -1231,6 +1360,7 @@ function togglePlayback() {
 }
 
 function cancelTextAnimationReset() {
+  textAnimationResetVersion++
   if (textAnimationResetFrame) cancelAnimationFrame(textAnimationResetFrame)
   if (textAnimationPlayFrame) cancelAnimationFrame(textAnimationPlayFrame)
   textAnimationResetFrame = undefined
@@ -1240,76 +1370,99 @@ function cancelTextAnimationReset() {
 
 function replayActiveTextAnimation() {
   cancelTextAnimationReset()
-  if (!textLineTransition.value) return
-
+  const version = textAnimationResetVersion
   isResettingTextAnimation.value = true
-  textAnimationResetFrame = requestAnimationFrame(() => {
-    textAnimationPlayFrame = requestAnimationFrame(() => {
-      isResettingTextAnimation.value = false
-      textAnimationResetFrame = undefined
-      textAnimationPlayFrame = undefined
+  void nextTick(() => {
+    if (version !== textAnimationResetVersion) return
+    // Commit the reset before enabling transitions again, even on a rapid restart.
+    document.querySelectorAll<HTMLElement>('.slot-stage--main .slot-slide, .slot-stage--main .animated-copy-word, .slot-stage--main .slide-cta').forEach(element => {
+      getComputedStyle(element).opacity
+      if (element.className.includes('has-heading-highlight--')) getComputedStyle(element, '::before').transform
+    })
+    textAnimationResetFrame = requestAnimationFrame(() => {
+      textAnimationPlayFrame = requestAnimationFrame(() => {
+        if (version !== textAnimationResetVersion) return
+        isResettingTextAnimation.value = false
+        textAnimationResetFrame = undefined
+        textAnimationPlayFrame = undefined
+      })
     })
   })
 }
 
 function startPlayback() {
-  if (!loopSlides.value && activeIndex.value >= slideCount.value - 1) {
-    snapToFirstSlide()
-  }
+  selectedIndex.value = 0
+  snapToSlide(0)
+  const version = ++snapVersion
   isPlaying.value = true
-  replayActiveTextAnimation()
-  restartAutoplay()
+  void nextTick(() => {
+    if (version !== snapVersion || !isPlaying.value) return
+    // Settle the first slide with transitions disabled before replaying its copy.
+    document.querySelectorAll<HTMLElement>('.slot-stage--main .slot-slide').forEach(element => {
+      getComputedStyle(element).transform
+      getComputedStyle(element).opacity
+    })
+    isSnappingSlides.value = false
+    replayActiveTextAnimation()
+    restartAutoplay()
+  })
 }
 
-function stopPlayback() {
+function stopPlayback(index = activeIndex.value) {
+  selectedIndex.value = index
   cancelTextAnimationReset()
   isPlaying.value = false
   clearTimeout(autoplayTimer)
   clearTimeout(transitionTimer)
   clearTimeout(packshotStartTimer)
   if (packshotTransitionFrame) cancelAnimationFrame(packshotTransitionFrame)
-  snapToFirstSlide()
+  snapToSlide(index)
 }
 
 function finishPlayback() {
   isPlaying.value = false
   clearTimeout(autoplayTimer)
   clearTimeout(transitionTimer)
-  snapToFirstSlide()
+  snapToSlide()
 }
 
-function snapToFirstSlide() {
+function snapToSlide(index = selectedIndex.value) {
+  const version = ++snapVersion
+  clearTimeout(transitionTimer)
+  clearTimeout(packshotStartTimer)
+  if (packshotTransitionFrame) cancelAnimationFrame(packshotTransitionFrame)
   clearMotionTrails()
   isSnappingSlides.value = true
   leavingIndex.value = null
-  activeIndex.value = 0
-  packshotIsVisible.value = false
+  activeIndex.value = index
+  packshotIsVisible.value = showPackshotOnFinalSlide.value && index === slideCount.value - 1
   packshotAnimation?.pause()
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      isSnappingSlides.value = false
+      if (version === snapVersion) isSnappingSlides.value = false
     })
   })
 }
 
 function handlePlaybackShortcut(event: KeyboardEvent) {
-  if (event.code !== 'Space' || event.repeat) return
+  if (isSlideCapture.value) return
+  if (event.code !== 'Space') return
 
   const target = event.target as HTMLElement | null
   const isEditing = target?.matches(
-    'input, textarea, select, button, [contenteditable="true"]'
+    'input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, select'
   )
 
-  if (isEditing) return
+  if (isEditing || target?.isContentEditable) return
 
   event.preventDefault()
-  togglePlayback()
+  event.stopImmediatePropagation()
+  if (!event.repeat) togglePlayback()
 }
 
 function selectSlide(index: number) {
-  selectedIndex.value = index
-  showSlide(index)
-  restartAutoplay()
+  selectedIndex.value = Math.max(0, Math.min(index, slideCount.value - 1))
+  stopPlayback(selectedIndex.value)
 }
 
 function selectPanel(side: PanelSide) {
@@ -1335,14 +1488,15 @@ function handleAssetUpload(
     return
   }
 
+  const targetSlide = field === 'logo' ? selectedContentSlide.value : selectedSlide.value
   const reader = new FileReader()
   reader.addEventListener('load', () => {
-    if (selectedSlide.value && typeof reader.result === 'string') {
-      selectedSlide.value[field] = reader.result
+    if (targetSlide && typeof reader.result === 'string') {
+      targetSlide[field] = reader.result
       if (field === 'backgroundImage') {
-        selectedSlide.value.backgroundImageX = 50
-        selectedSlide.value.backgroundImageY = 50
-        selectedSlide.value.backgroundImageScale = 1
+        targetSlide.backgroundImageX = 50
+        targetSlide.backgroundImageY = 50
+        targetSlide.backgroundImageScale = 1
       }
     }
     restoreScroll()
@@ -1356,12 +1510,13 @@ function rememberControlsScroll() {
 }
 
 function clearAsset(field: 'backgroundImage' | 'logo') {
-  if (!selectedSlide.value) return
-  selectedSlide.value[field] = ''
+  const slide = field === 'logo' ? selectedContentSlide.value : selectedSlide.value
+  if (!slide) return
+  slide[field] = ''
   if (field === 'backgroundImage') {
-    selectedSlide.value.backgroundImageX = 50
-    selectedSlide.value.backgroundImageY = 50
-    selectedSlide.value.backgroundImageScale = 1
+    slide.backgroundImageX = 50
+    slide.backgroundImageY = 50
+    slide.backgroundImageScale = 1
   }
 }
 
@@ -1396,30 +1551,42 @@ function applySelectedBackgroundToAspectRatios() {
 }
 
 function applySelectedTextToAspectRatios() {
-  const slide = selectedSlide.value
+  const slide = selectedContentSlide.value
   if (!slide) return
 
   const textFields: Pick<
     AspectSlideFields,
+    | 'logoWidth'
     | 'heading'
     | 'headingHighlights'
-    | 'headingSize'
+    | 'textAlign'
+  | 'headingSize'
     | 'headingAutoScale'
     | 'subheading'
+    | 'subheadingRelative'
+    | 'subheadingHeadingRatio'
     | 'subheadingSize'
     | 'legalText'
+    | 'legalRelative'
+    | 'legalHeadingRatio'
     | 'legalSize'
     | 'legalOpacity'
     | 'legalShadow'
     | 'legalShadowOpacity'
   > = {
+    logoWidth: slide.logoWidth,
     heading: slide.heading,
     headingHighlights: normalizeHeadingHighlights(slide.headingHighlights, slide.heading),
+    textAlign: slide.textAlign ?? 'left',
     headingSize: slide.headingSize,
     headingAutoScale: slide.headingAutoScale ?? false,
     subheading: slide.subheading,
+    subheadingRelative: slide.subheadingRelative ?? false,
+    subheadingHeadingRatio: slide.subheadingHeadingRatio ?? 50,
     subheadingSize: slide.subheadingSize,
     legalText: slide.legalText,
+    legalRelative: slide.legalRelative ?? false,
+    legalHeadingRatio: slide.legalHeadingRatio ?? 50,
     legalSize: slide.legalSize,
     legalOpacity: slide.legalOpacity,
     legalShadow: slide.legalShadow,
@@ -1431,20 +1598,23 @@ function applySelectedTextToAspectRatios() {
   const aspectKeys = new Set([
     ...Object.keys(aspectSlideSettings.value),
     ...quickAspectPresets.map(preset => getAspectKey(preset.width, preset.height)),
-    ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height))
+    ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height)),
+    ...allAspectPresets.value.map(preset => placementKey(preset.exportWidth, preset.exportHeight))
   ])
 
   for (const key of aspectKeys) {
     aspectSlideSettings.value[key] ||= captureAspectSlideSettings()
-    const fields = aspectSlideSettings.value[key]?.[selectedPanel.value]?.[selectedIndex.value]
-    if (fields) Object.assign(fields, textFields)
+    for (const side of panelSides) {
+      const fields = aspectSlideSettings.value[key]?.[side]?.[selectedIndex.value]
+      if (fields) Object.assign(fields, textFields, { logoWidth: logoWidthForApplyAll(exportWidth.value, exportHeight.value, key, slide.logoWidth) })
+    }
   }
 
   saveSettings()
 }
 
 function applySelectedLogoToAspectRatios() {
-  const slide = selectedSlide.value
+  const slide = selectedContentSlide.value
   if (!slide) return
 
   const logoFields: Pick<AspectSlideFields, 'logo' | 'logoWidth' | 'logoHeight'> = {
@@ -1458,20 +1628,23 @@ function applySelectedLogoToAspectRatios() {
   const aspectKeys = new Set([
     ...Object.keys(aspectSlideSettings.value),
     ...quickAspectPresets.map(preset => getAspectKey(preset.width, preset.height)),
-    ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height))
+    ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height)),
+    ...allAspectPresets.value.map(preset => placementKey(preset.exportWidth, preset.exportHeight))
   ])
 
   for (const key of aspectKeys) {
     aspectSlideSettings.value[key] ||= captureAspectSlideSettings()
-    const fields = aspectSlideSettings.value[key]?.[selectedPanel.value]?.[selectedIndex.value]
-    if (fields) Object.assign(fields, logoFields)
+    for (const side of panelSides) {
+      const fields = aspectSlideSettings.value[key]?.[side]?.[selectedIndex.value]
+      if (fields) Object.assign(fields, logoFields, { logoWidth: logoWidthForApplyAll(exportWidth.value, exportHeight.value, key, slide.logoWidth) })
+    }
   }
 
   saveSettings()
 }
 
 function applySelectedCtaToAspectRatios() {
-  const slide = selectedSlide.value
+  const slide = selectedContentSlide.value
   if (!slide) return
 
   const ctaFields: Pick<
@@ -1490,13 +1663,16 @@ function applySelectedCtaToAspectRatios() {
   const aspectKeys = new Set([
     ...Object.keys(aspectSlideSettings.value),
     ...quickAspectPresets.map(preset => getAspectKey(preset.width, preset.height)),
-    ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height))
+    ...allAspectPresets.value.map(preset => getAspectKey(preset.width, preset.height)),
+    ...allAspectPresets.value.map(preset => placementKey(preset.exportWidth, preset.exportHeight))
   ])
 
   for (const key of aspectKeys) {
     aspectSlideSettings.value[key] ||= captureAspectSlideSettings()
-    const fields = aspectSlideSettings.value[key]?.[selectedPanel.value]?.[selectedIndex.value]
-    if (fields) Object.assign(fields, ctaFields)
+    for (const side of panelSides) {
+      const fields = aspectSlideSettings.value[key]?.[side]?.[selectedIndex.value]
+      if (fields) Object.assign(fields, ctaFields)
+    }
   }
 
   saveSettings()
@@ -1561,12 +1737,12 @@ function isLogoImage(logo: string) {
   return logo.startsWith('data:') || logo === defaultLogo
 }
 
-function getLogoSource(slide: Slide) {
-  if (slide.logo === defaultLogo && hasWhiteBackground(slide)) {
+function getLogoSource(slide: Slide, backgroundSlide: Slide = slide) {
+  if (slide.logo === defaultLogo && hasWhiteBackground(backgroundSlide)) {
     return invertedDefaultLogo
   }
 
-  if (slide.logo === defaultLogo && hasPurpleBackground(slide)) {
+  if (slide.logo === defaultLogo && hasPurpleBackground(backgroundSlide)) {
     return purpleLetterDefaultLogo
   }
 
@@ -1574,7 +1750,7 @@ function getLogoSource(slide: Slide) {
 }
 
 function useDefaultLogo() {
-  if (selectedSlide.value) selectedSlide.value.logo = defaultLogo
+  if (selectedContentSlide.value) selectedContentSlide.value.logo = defaultLogo
 }
 
 function normalizeKeyValue(value: number | number[]) {
@@ -1772,6 +1948,7 @@ async function initPackshotAnimation() {
 }
 
 function setPackshotProgress(progress: number) {
+  packshotProgress = Math.max(0, Math.min(1, progress))
   if (!packshotAnimation || !packshotAnimationReady) return
 
   const totalFrames = Math.max(1, packshotAnimation.totalFrames || 1)
@@ -1797,7 +1974,7 @@ function syncPackshotState() {
   }
 
   packshotAnimation.pause()
-  setPackshotProgress(0)
+  setPackshotProgress(packshotProgress)
 }
 
 function schedulePackshotPlayback(previousIndex: number, nextIndex: number) {
@@ -2714,13 +2891,10 @@ async function loadRenderImages() {
 }
 
 function getFrameState(time: number) {
-  const firstPause = Number.isFinite(firstPauseSeconds.value)
-    ? firstPauseSeconds.value
-    : pauseSeconds.value
   const segments = Array.from(
     { length: slideCount.value },
     (_, index) => {
-      const pause = index === 0 ? firstPause : pauseSeconds.value
+      const pause = getSlidePause(index)
       const hasTransition = loopSlides.value || index < slideCount.value - 1
       return pause + (hasTransition ? transitionSeconds.value : 0)
     }
@@ -2738,7 +2912,7 @@ function getFrameState(time: number) {
   }
 
   const localTime = time - segmentStart
-  const currentPause = currentIndex === 0 ? firstPause : pauseSeconds.value
+  const currentPause = getSlidePause(currentIndex)
   const hasTransition = loopSlides.value || currentIndex < slideCount.value - 1
   const nextIndex = hasTransition ? (currentIndex + 1) % slideCount.value : currentIndex
   const transition = hasTransition && localTime >= currentPause && transitionSeconds.value > 0
@@ -2887,11 +3061,11 @@ async function renderAspectGroupImagesOnServer(
   downloadBlob(zip, `${groupName}_${getRenderDateStamp()}.zip`)
 }
 
-async function requestCurrentSlidePng() {
+async function requestCurrentSlidePng(snapshot?: PersistedSettings) {
   storeCurrentAspectSettings()
   const settings: PersistedSettings = {
-    ...getCurrentSettings(),
-    selectedIndex: activeIndex.value,
+    ...(snapshot ?? getCurrentSettings()),
+    selectedIndex: snapshot?.selectedIndex ?? activeIndex.value,
     exportFormat: 'png'
   }
   const preset: AspectPreset = {
@@ -2913,7 +3087,7 @@ async function requestCurrentSlidePng() {
     'presets.json'
   )
   formData.set('groupLabel', activeAspectLabel.value)
-  formData.set('activeIndex', String(activeIndex.value))
+  formData.set('activeIndex', String(settings.selectedIndex))
   formData.set('renderScale', '1')
   formData.set('responseMode', 'png')
 
@@ -2927,6 +3101,90 @@ async function requestCurrentSlidePng() {
   return blob.type === 'image/png'
     ? blob
     : new Blob([blob], { type: 'image/png' })
+}
+
+const isSlideCapture = ref(false)
+const canvas = useCanvasViewport(previewZoom, computed(() => aspectWidth.value / aspectHeight.value), computed(() => !isSlideCapture.value))
+const canvasViewport = canvas.viewport
+let captureWasPlaying = false
+let capturePackshotWasPaused = true
+async function prepareCurrentSlideCapture() {
+  captureWasPlaying = isPlaying.value
+  capturePackshotWasPaused = packshotAnimation?.isPaused ?? true
+  isPlaying.value = false
+  clearTimeout(autoplayTimer)
+  clearTimeout(transitionTimer)
+  clearTimeout(packshotStartTimer)
+  if (packshotTransitionFrame) cancelAnimationFrame(packshotTransitionFrame)
+  leavingIndex.value = null
+  activeIndex.value = selectedIndex.value
+  isSnappingSlides.value = true
+  packshotIsVisible.value = showPackshotOnFinalSlide.value && selectedIndex.value === slideCount.value - 1
+  isSlideCapture.value = true
+  const layoutWidth = isPortrait.value ? 520 : 900
+  const values = { width: exportWidth.value, height: exportHeight.value, 'layout-width': layoutWidth,
+    'layout-height': layoutWidth * aspectHeight.value / aspectWidth.value, scale: exportWidth.value / layoutWidth }
+  for (const [key, value] of Object.entries(values)) document.body.style.setProperty(`--capture-${key}`, key === 'scale' ? String(value) : `${value}px`)
+  document.body.classList.add('is-slide-capture')
+  await nextTick()
+  packshotAnimation?.pause()
+  await document.fonts.ready
+}
+function closeSlideCapture() {
+  document.body.classList.remove('is-slide-capture')
+  isSlideCapture.value = false
+  isSnappingSlides.value = false
+  isPlaying.value = captureWasPlaying
+  if (!capturePackshotWasPaused) packshotAnimation?.play()
+  restartAutoplay()
+}
+
+const figmaExportStatus = ref<'idle' | 'exporting' | 'done' | 'error'>('idle')
+const figmaExportError = ref('')
+async function exportCurrentSlideToFigma() {
+  if (figmaExportStatus.value === 'exporting') return
+  const wasPlaying = isPlaying.value
+  const packshotWasPaused = packshotAnimation?.isPaused ?? true
+  figmaExportStatus.value = 'exporting'
+  figmaExportError.value = ''
+  isPlaying.value = false
+  clearTimeout(autoplayTimer)
+  clearTimeout(transitionTimer)
+  leavingIndex.value = null
+  activeIndex.value = selectedIndex.value
+  isSnappingSlides.value = true
+  try {
+    await nextTick()
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    const stage = document.querySelector<HTMLElement>('.slot-stage--main')
+    if (!stage) throw new Error('The banner preview is unavailable.')
+    packshotAnimation?.pause()
+    const banner = await measureFigmaBanner(stage, exportWidth.value, exportHeight.value)
+    const settings = currentSlideSnapshot(getCurrentSettings(), selectedIndex.value)
+    settings.showPackshotOnFinalSlide = banner.panels.some(panel => panel.name === 'Packshot')
+    if (settings.showPackshotOnFinalSlide && packshotAnimation) {
+      settings.packshotStartFrame = Math.round(packshotAnimation.currentFrame)
+      settings.packshotEndFrame = settings.packshotStartFrame
+    }
+    const reference = await requestCurrentSlidePng(settings)
+    const referencePng = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = reject
+      reader.readAsDataURL(reference)
+    })
+    const data = { ...banner, name: `Slide ${selectedIndex.value + 1} / ${banner.name}`, settings, referencePng }
+    downloadBlob(new Blob([JSON.stringify(data)], { type: 'application/json' }), `slide-${selectedIndex.value + 1}-${exportWidth.value}x${exportHeight.value}.figma.json`)
+    figmaExportStatus.value = 'done'
+  } catch (error) {
+    figmaExportError.value = error instanceof Error ? error.message : 'Figma export failed.'
+    figmaExportStatus.value = 'error'
+  } finally {
+    isSnappingSlides.value = false
+    if (!packshotWasPaused) packshotAnimation?.play()
+    isPlaying.value = wasPlaying
+    restartAutoplay()
+  }
 }
 
 async function copyCurrentSlideAsPng() {
@@ -3028,6 +3286,7 @@ async function renderSequence() {
     const prefix = exportPrefix.value.trim().replace(/[^\w-]+/g, '-') || 'frame'
     if (
       exportFormat.value === 'png'
+      && contentLayoutPreset.value !== 'per-format'
       && !showPackshotOnFinalSlide.value
       && !hasPulsingCta.value
       && !hasCta.value
@@ -3052,6 +3311,7 @@ async function renderSequence() {
       transitionSeconds: transitionSeconds.value,
       pauseSeconds: pauseSeconds.value,
       firstPauseSeconds: firstPauseSeconds.value,
+      packshotPauseSeconds: packshotPauseSeconds.value,
       curve: curve.value,
       exportWidth: width,
       exportHeight: height,
@@ -3066,6 +3326,8 @@ async function renderSequence() {
       motionBlur: motionBlur.value,
       motionBlurIntensity: motionBlurIntensity.value,
       contentLayoutPreset: contentLayoutPreset.value,
+      sharedContentSlides: sharedContentSlides.value,
+      aspectContentPlacements: aspectContentPlacements.value,
       swapVerticalPanels: swapVerticalPanels.value,
       swapHorizontalPanels: swapHorizontalPanels.value,
       swapUltraNarrowPanels: swapUltraNarrowPanels.value,
@@ -3204,10 +3466,13 @@ function normalizeSlide(slide: Slide): Slide {
     bottomFade: slide.bottomFade ?? false,
     headingHighlights: normalizeHeadingHighlights(slide.headingHighlights, slide.heading),
     headingAutoScale: slide.headingAutoScale ?? false,
+    textAlign: slide.textAlign === 'center' ? 'center' : 'left',
     headingSize:
       typeof slide.headingSize === 'number'
         ? Math.max(25, Math.min(200, slide.headingSize))
         : 100,
+    subheadingRelative: slide.subheadingRelative === true,
+    subheadingHeadingRatio: Math.max(1, Math.min(100, Number(slide.subheadingHeadingRatio) || 50)),
     subheadingSize:
       typeof slide.subheadingSize === 'number'
         ? Math.max(25, Math.min(200, slide.subheadingSize))
@@ -3227,6 +3492,8 @@ function normalizeSlide(slide: Slide): Slide {
           : Math.max(1, Math.min(100, slide.logoWidth))
         : 40,
     logoHeight: typeof slide.logoHeight === 'number' ? slide.logoHeight : 52,
+    legalRelative: slide.legalRelative === true,
+    legalHeadingRatio: Math.max(1, Math.min(100, Number(slide.legalHeadingRatio) || 50)),
     legalSize:
       typeof slide.legalSize === 'number'
         ? Math.max(25, Math.min(400, slide.legalSize))
@@ -3306,7 +3573,10 @@ function normalizeAspectSlideFields(fields: AspectSlideFields): AspectSlideField
     bottomFade: fields.bottomFade ?? false,
     headingHighlights: normalizeHeadingHighlights(fields.headingHighlights, fields.heading),
     headingAutoScale: fields.headingAutoScale ?? false,
+    textAlign: fields.textAlign === 'center' ? 'center' : 'left',
     headingSize: Math.max(25, Math.min(200, fields.headingSize)),
+    subheadingRelative: fields.subheadingRelative === true,
+    subheadingHeadingRatio: Math.max(1, Math.min(100, Number(fields.subheadingHeadingRatio) || 50)),
     subheadingSize: Math.max(25, Math.min(200, fields.subheadingSize ?? 100)),
     ctaText: typeof fields.ctaText === 'string' ? fields.ctaText : '',
     ctaSize: Math.max(25, Math.min(200, fields.ctaSize ?? 100)),
@@ -3315,6 +3585,8 @@ function normalizeAspectSlideFields(fields: AspectSlideFields): AspectSlideField
     ctaBottomMargin: fields.ctaBottomMargin ?? false,
     logoWidth: Math.max(1, Math.min(100, fields.logoWidth)),
     logoHeight: Math.max(1, Math.min(200, fields.logoHeight)),
+    legalRelative: fields.legalRelative === true,
+    legalHeadingRatio: Math.max(1, Math.min(100, Number(fields.legalHeadingRatio) || 50)),
     legalSize: Math.max(25, Math.min(400, fields.legalSize ?? 100)),
     legalOpacity: Math.max(0, Math.min(100, fields.legalOpacity ?? 72)),
     legalShadow: fields.legalShadow ?? false,
@@ -3400,6 +3672,7 @@ function applySettings(settings: Partial<PersistedSettings>) {
   if (typeof settings.pauseSeconds === 'number') {
     pauseSeconds.value = Math.max(0, Math.min(10, settings.pauseSeconds))
   }
+  packshotPauseSeconds.value = Math.max(0, Math.min(10, settings.packshotPauseSeconds ?? settings.pauseSeconds ?? 2.35))
   if (typeof settings.firstPauseSeconds === 'number') {
     firstPauseSeconds.value = Math.max(0, Math.min(10, settings.firstPauseSeconds))
   } else {
@@ -3433,9 +3706,13 @@ function applySettings(settings: Partial<PersistedSettings>) {
   if (typeof settings.motionBlurIntensity === 'number') {
     motionBlurIntensity.value = Math.max(0, Math.min(100, settings.motionBlurIntensity))
   }
-  contentLayoutPreset.value = settings.contentLayoutPreset === 'adaptive-split'
-    ? 'adaptive-split'
-    : 'stacked'
+  sharedContentSlides.value = Array.isArray(settings.sharedContentSlides) ? settings.sharedContentSlides.filter(isValidSlide).map(normalizeSlide) : []
+  aspectContentPlacements.value = {}
+  for (const [key, value] of Object.entries(settings.aspectContentPlacements || {})) {
+    const match = key.match(/^(\d+)x(\d+)$/)
+    if (match) aspectContentPlacements.value[key] = normalizeContentPlacement(value, Number(match[1]), Number(match[2]), Number(match[2]) >= Number(match[1]) ? Boolean(settings.swapVerticalPanels) : Number(match[1]) / Number(match[2]) >= 4 ? Boolean(settings.swapUltraNarrowPanels) : Boolean(settings.swapHorizontalPanels))
+  }
+  setContentLayoutPreset('per-format')
   if (typeof settings.exportFps === 'number') {
     exportFps.value = Math.max(1, Math.min(60, Math.round(settings.exportFps)))
   }
@@ -3652,6 +3929,7 @@ function getCurrentSettings(): PersistedSettings {
     transitionSeconds: transitionSeconds.value,
     pauseSeconds: pauseSeconds.value,
     firstPauseSeconds: firstPauseSeconds.value,
+    packshotPauseSeconds: packshotPauseSeconds.value,
     curve: curve.value,
     exportWidth: exportWidth.value,
     exportHeight: exportHeight.value,
@@ -3666,6 +3944,8 @@ function getCurrentSettings(): PersistedSettings {
     motionBlur: motionBlur.value,
     motionBlurIntensity: motionBlurIntensity.value,
     contentLayoutPreset: contentLayoutPreset.value,
+    sharedContentSlides: sharedContentSlides.value,
+    aspectContentPlacements: aspectContentPlacements.value,
     swapVerticalPanels: swapVerticalPanels.value,
     swapHorizontalPanels: swapHorizontalPanels.value,
     swapUltraNarrowPanels: swapUltraNarrowPanels.value,
@@ -3698,6 +3978,7 @@ function createLocalStorageFallbackSettings(settings: PersistedSettings): Persis
 
   return {
     ...settings,
+    sharedContentSlides: settings.sharedContentSlides?.map(sanitizeSlide),
     panelSlides: {
       left: settings.panelSlides.left.map(sanitizeSlide),
       right: settings.panelSlides.right.map(sanitizeSlide)
@@ -3824,7 +4105,7 @@ onMounted(async () => {
   recordUndoSnapshot()
   initPackshotAnimation()
   restartAutoplay()
-  window.addEventListener('keydown', handlePlaybackShortcut)
+  window.addEventListener('keydown', handlePlaybackShortcut, true)
 
   watch(
     [
@@ -3837,6 +4118,7 @@ onMounted(async () => {
       transitionSeconds,
       pauseSeconds,
       firstPauseSeconds,
+      packshotPauseSeconds,
       curve,
       exportWidth,
       exportHeight,
@@ -3851,6 +4133,8 @@ onMounted(async () => {
       motionBlur,
       motionBlurIntensity,
       contentLayoutPreset,
+      sharedContentSlides,
+      aspectContentPlacements,
       swapVerticalPanels,
       swapHorizontalPanels,
       swapUltraNarrowPanels,
@@ -3870,6 +4154,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  document.body.classList.remove('is-slide-capture')
   clearInterval(autoplayTimer)
   clearTimeout(transitionTimer)
   clearTimeout(saveTimer)
@@ -3882,11 +4167,11 @@ onBeforeUnmount(() => {
   packshotAnimation?.destroy()
   packshotAnimation = null
   window.__packshotAnimation = null
-  window.removeEventListener('keydown', handlePlaybackShortcut)
+  window.removeEventListener('keydown', handlePlaybackShortcut, true)
   saveSettings()
 })
 
-watch([transitionSeconds, pauseSeconds, firstPauseSeconds], restartAutoplay)
+watch([transitionSeconds, pauseSeconds, firstPauseSeconds, packshotPauseSeconds, showPackshotOnFinalSlide], restartAutoplay)
 watch(motionBlur, (enabled) => {
   if (!enabled) clearMotionTrails()
 })
@@ -3901,13 +4186,54 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
 
 <template>
   <main class="animation-generator">
+    <div v-if="isSlideCapture" class="slide-capture-toolbar" role="region" aria-label="Figma capture view">
+      <div><strong>Slide {{ selectedIndex + 1 }} · {{ exportWidth }} × {{ exportHeight }}</strong>
+        <p>In the Figma Chrome extension, choose Select element, click this banner, then paste into Figma for editable layers.</p>
+      </div>
+      <button type="button" class="button button--outline button--compact" @click="closeSlideCapture">Back to editor</button>
+    </div>
     <UndoShortcut @undo="undoLastChange" />
+      <AspectPreviewGrid
+        :presets="allAspectPresets"
+        :packs="allAspectPacks"
+        :active-width="aspectWidth"
+        :active-height="aspectHeight"
+        :get-slides="getAspectPreviewSlides"
+        :get-background-style="getAspectPreviewBackgroundStyle"
+        :default-logo="defaultLogo"
+        :is-logo-image="isLogoImage"
+        :get-logo-source="getLogoSource"
+        :has-white-background="hasWhiteBackground"
+        :swap-vertical-panels="swapVerticalPanels"
+        :swap-horizontal-panels="swapHorizontalPanels"
+        :swap-ultra-narrow-panels="swapUltraNarrowPanels"
+        :content-layout-preset="contentLayoutPreset"
+        :get-content-placement="preset => getFormatPlacement(preset.exportWidth, preset.exportHeight)"
+        :get-shared-content="preset => getFormatContent(activeIndex, preset.exportWidth, preset.exportHeight)"
+        :render-disabled="isExporting"
+        :is-rendering="isRenderingAspectGroup"
+        :render-progress="exportProgress"
+        @select="setAspectRatio"
+        @add="addCustomAspectPreset"
+        @add-pack="addCustomAspectPack"
+        @rename-pack="renameCustomAspectPack"
+        @render-group="renderAspectGroupImages"
+        @remove-pack="removeCustomAspectPack"
+        @remove="removeCustomAspectPreset"
+      />
     <section class="animation-preview" aria-label="Animation preview">
+      <div ref="canvasViewport" class="canvas-viewport" :class="{ 'is-panning': canvas.dragging.value }"
+        @pointerdown.capture="canvas.pointerDown" @pointermove="canvas.pointerMove"
+        @pointerup="canvas.pointerUp" @pointercancel="canvas.pointerUp" @lostpointercapture="canvas.pointerUp">
       <div
         class="stage-zoom-frame"
         :class="{ 'is-portrait': isPortrait }"
         :style="{
-          '--stage-preview-zoom': previewZoomScale,
+          '--stage-preview-zoom': 1,
+          '--canvas-zoom': previewZoomScale * canvas.baseWidth.value / (isPortrait ? 520 : 900),
+          '--canvas-pan-x': `${canvas.pan.value.x}px`,
+          '--canvas-pan-y': `${canvas.pan.value.y}px`,
+          width: `${isPortrait ? 520 : 900}px`,
           aspectRatio: `${aspectWidth} / ${aspectHeight}`
         }"
       >
@@ -3922,8 +4248,9 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             'has-motion-blur': motionBlur,
             'is-transitioning': leavingIndex !== null,
             'has-adaptive-content-layout': contentLayoutPreset === 'adaptive-split',
+            'has-format-content-layout': contentLayoutPreset === 'per-format',
             'is-swapped': isPortrait && activePanelSwap,
-            'is-snapping': isSnappingSlides,
+            'is-snapping': isSnappingSlides || !isPlaying,
             'is-resetting-text-animation': isResettingTextAnimation
           }"
           :style="{
@@ -3945,7 +4272,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
             ]"
           >
             <article
-              v-for="(slide, index) in panelSlides[side]"
+              v-for="(slide, index) in getRenderedPanelSlides(side)"
               :key="index"
               class="slot-slide"
               :class="{
@@ -3963,15 +4290,17 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
                 :x="normalizeBackgroundImageX(slide.backgroundImageX)"
                 :y="normalizeBackgroundImageY(slide.backgroundImageY)"
                 :scale="normalizeBackgroundImageScale(slide.backgroundImageScale)"
-                :editable="side === selectedPanel && index === selectedIndex && activeIndex === index"
+                :editable="getBackgroundSourceSide(side) === selectedPanel && index === selectedIndex && activeIndex === index"
                 @update:x="slide.backgroundImageX = $event"
                 @update:y="slide.backgroundImageY = $event"
                 @update:scale="slide.backgroundImageScale = $event"
               />
               <div
                 class="slide-content"
+                :data-text-align="getLayoutContentSlide(side, index).textAlign || 'left'"
                 :class="{
-                  'has-brand-pink-text': hasWhiteBackground(getLayoutContentSlide(side, index))
+                  'has-brand-pink-text': hasWhiteBackground(contentLayoutPreset === 'per-format' ? slide : getLayoutContentSlide(side, index)),
+                  ...getContentPlacementClasses(side, index)
                 }"
                 :style="{
                   '--logo-width': `${getLayoutContentSlide(side, index).logoWidth}%`
@@ -3985,16 +4314,28 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
                   :bottom-margin="getLayoutContentSlide(side, index).ctaBottomMargin"
                 />
 
-                <div
+                <RelativeText
+                  kind="logo"
+                  :relative="!!getLayoutContentSlide(side, index).legalRelative && getLayoutContentSlide(side, index).logo === defaultLogo"
+                  :heading-size="getLayoutContentSlide(side, index).headingSize"
                   class="slide-logo"
                   :class="{
                     'has-logo-image': isLogoImage(getLayoutContentSlide(side, index).logo),
                     'is-empty': !getLayoutContentSlide(side, index).logo
                   }"
                 >
+                  <AnimatedBrandLogo
+                    v-if="getLayoutContentSlide(side, index).logo === defaultLogo"
+                    :key="`brand-logo-${side}-${index}-${getLogoSource(getLayoutContentSlide(side, index), slide)}`"
+                    :src="getLogoSource(getLayoutContentSlide(side, index), slide)"
+                    :animation-data="createPackshotAnimationData"
+                    :tone="hasWhiteBackground(slide) ? 'white' : hasPurpleBackground(slide) ? 'purple' : 'default'"
+                    :duration="transitionSeconds"
+                    :style="{width: isUltraNarrow ? '100%' : `${getLayoutContentSlide(side, index).logoWidth}%`}"
+                  />
                   <img
-                    v-if="isLogoImage(getLayoutContentSlide(side, index).logo)"
-                    :src="getLogoSource(getLayoutContentSlide(side, index))"
+                    v-else-if="isLogoImage(getLayoutContentSlide(side, index).logo)"
+                    :src="getLogoSource(getLayoutContentSlide(side, index), slide)"
                     :style="{
                       width: isUltraNarrow
                         ? '100%'
@@ -4006,7 +4347,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
                   <span v-else-if="getLayoutContentSlide(side, index).logo">
                     {{ getLayoutContentSlide(side, index).logo }}
                   </span>
-                </div>
+                </RelativeText>
 
                 <AnimatedSlideCopy
                   :heading="getLayoutContentSlide(side, index).heading"
@@ -4015,10 +4356,17 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
                   :heading-auto-scale="getLayoutContentSlide(side, index).headingAutoScale"
                   :subheading="getLayoutContentSlide(side, index).subheading"
                   :subheading-size="getLayoutContentSlide(side, index).subheadingSize"
+                  :text-align="getLayoutContentSlide(side, index).textAlign"
+                  :subheading-relative="getLayoutContentSlide(side, index).subheadingRelative"
+                  :subheading-heading-ratio="getLayoutContentSlide(side, index).subheadingHeadingRatio"
                   :animate="textLineTransition"
+                  :transition-seconds="transitionSeconds"
                 />
 
-                <p
+                <RelativeText
+                  :relative="getLayoutContentSlide(side, index).legalRelative"
+                  :ratio="getLayoutContentSlide(side, index).legalHeadingRatio"
+                  :heading-size="getLayoutContentSlide(side, index).headingSize"
                   v-if="getLayoutContentSlide(side, index).legalText"
                   class="slide-legal"
                   :style="{
@@ -4030,7 +4378,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
                   }"
                 >
                   {{ getLayoutContentSlide(side, index).legalText }}
-                </p>
+                </RelativeText>
               </div>
             </article>
             <div class="motion-trail-layer" aria-hidden="true" />
@@ -4047,12 +4395,16 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         </div>
       </div>
 
+      </div>
       <div class="preview-toolbar">
         <button type="button" class="play-button" @click="togglePlayback">
           {{ isPlaying ? 'Stop' : 'Play' }}
         </button>
 
-        <StageZoomControl v-model="previewZoom" />
+        <div class="canvas-zoom-actions">
+          <StageZoomControl v-model="previewZoom" :min="10" :max="400" />
+          <button type="button" class="canvas-reset" aria-label="Reset canvas view" title="Fit and center canvas" @click="canvas.reset">Fit</button>
+        </div>
 
         <SlideTimeline
           :count="slideCount"
@@ -4060,6 +4412,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           :leaving-index="leavingIndex"
           :is-playing="isPlaying"
           :first-pause-seconds="firstPauseSeconds"
+          :final-pause-seconds="showPackshotOnFinalSlide ? packshotPauseSeconds : undefined"
           :pause-seconds="pauseSeconds"
           :transition-seconds="transitionSeconds"
           :loop="loopSlides"
@@ -4067,34 +4420,11 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         />
       </div>
 
-      <AspectPreviewGrid
-        :presets="allAspectPresets"
-        :packs="allAspectPacks"
-        :active-width="aspectWidth"
-        :active-height="aspectHeight"
-        :get-slides="getAspectPreviewSlides"
-        :get-background-style="getAspectPreviewBackgroundStyle"
-        :is-logo-image="isLogoImage"
-        :get-logo-source="getLogoSource"
-        :has-white-background="hasWhiteBackground"
-        :swap-vertical-panels="swapVerticalPanels"
-        :swap-horizontal-panels="swapHorizontalPanels"
-        :swap-ultra-narrow-panels="swapUltraNarrowPanels"
-        :content-layout-preset="contentLayoutPreset"
-        :render-disabled="isExporting"
-        :is-rendering="isRenderingAspectGroup"
-        :render-progress="exportProgress"
-        @select="setAspectRatio"
-        @add="addCustomAspectPreset"
-        @add-pack="addCustomAspectPack"
-        @rename-pack="renameCustomAspectPack"
-        @render-group="renderAspectGroupImages"
-        @remove-pack="removeCustomAspectPack"
-        @remove="removeCustomAspectPreset"
-      />
+
     </section>
 
-    <aside ref="controlsPanel" class="animation-controls">
+    <div class="editor-right-sidebar">
+    <aside ref="controlsPanel" class="animation-controls" :inert="figmaExportStatus === 'exporting'">
       <!-- <header class="controls-title">
         <p>Animation generator</p>
         <h1>{{ panelLabel }} panel</h1>
@@ -4183,17 +4513,6 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
       </div>
 
       <div class="editor-sticky-nav">
-        <div class="panel-tabs" aria-label="Select panel to edit">
-          <button
-            v-for="side in panelSides"
-            :key="side"
-            type="button"
-            :class="{ 'is-selected': selectedPanel === side }"
-            @click="selectPanel(side)"
-          >
-            {{ getPanelLabel(side) }}
-          </button>
-        </div>
         <SlideSelector
           :count="panelSlides[selectedPanel].length"
           :current-index="selectedIndex"
@@ -4212,40 +4531,80 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         />
 
         <div class="editor-secondary-actions">
-          <button
-            type="button"
-            class="button button--outline button--compact button--block swap-panels-button"
-            @click="togglePanelSwap"
-          >
-            {{ panelSwapButtonLabel }}
-          </button>
-
           <CopySlidePng
             :status="copySlideStatus"
             @copy="copyCurrentSlideAsPng"
           />
+          <button type="button" class="button button--outline button--compact button--block"
+            :disabled="figmaExportStatus === 'exporting'" @click="exportCurrentSlideToFigma">
+            {{ figmaExportStatus === 'exporting' ? 'Preparing slide…' : 'Export current slide' }}
+          </button>
+          <small v-if="figmaExportStatus === 'error'" role="alert">{{ figmaExportError }}</small>
+          <small v-if="figmaExportStatus === 'done'" role="status">Import the downloaded file with the Resizer Banner Import plugin.</small>
         </div>
       </div>
 
       <template v-if="selectedSlide">
-        <LayoutControls v-model="contentLayoutPreset" />
+        <ContentPlacementControls
+          v-model="currentContentPlacement" :portrait="isPortrait" :format-label="`${exportWidth} × ${exportHeight}`"
+          :packs="allAspectPacks" @apply-pack="applyPlacementToPack" />
 
         <TextControls
-          v-model:heading="selectedSlide.heading"
-          v-model:heading-highlights="selectedSlide.headingHighlights"
-          v-model:heading-size="selectedSlide.headingSize"
-          v-model:heading-auto-scale="selectedSlide.headingAutoScale"
-          v-model:subheading="selectedSlide.subheading"
-          v-model:subheading-size="selectedSlide.subheadingSize"
-          v-model:legal-text="selectedSlide.legalText"
-          v-model:legal-size="selectedSlide.legalSize"
-          v-model:legal-opacity="selectedSlide.legalOpacity"
-          v-model:legal-shadow="selectedSlide.legalShadow"
-          v-model:legal-shadow-opacity="selectedSlide.legalShadowOpacity"
-          v-model:logo-width="selectedSlide.logoWidth"
-          :show-logo-width="isLogoImage(selectedSlide.logo)"
+          v-model:heading="selectedContentSlide.heading"
+          v-model:heading-highlights="selectedContentSlide.headingHighlights"
+          v-model:heading-size="selectedContentSlide.headingSize"
+          v-model:text-align="selectedContentSlide.textAlign"
+          v-model:heading-auto-scale="selectedContentSlide.headingAutoScale"
+          v-model:subheading="selectedContentSlide.subheading"
+          v-model:subheading-size="selectedContentSlide.subheadingSize"
+          v-model:subheading-relative="selectedContentSlide.subheadingRelative"
+          v-model:subheading-heading-ratio="selectedContentSlide.subheadingHeadingRatio"
+          v-model:legal-text="selectedContentSlide.legalText"
+          v-model:legal-size="selectedContentSlide.legalSize"
+          v-model:legal-relative="selectedContentSlide.legalRelative"
+          v-model:legal-heading-ratio="selectedContentSlide.legalHeadingRatio"
+          v-model:legal-opacity="selectedContentSlide.legalOpacity"
+          v-model:legal-shadow="selectedContentSlide.legalShadow"
+          v-model:legal-shadow-opacity="selectedContentSlide.legalShadowOpacity"
+          v-model:logo-width="selectedContentSlide.logoWidth"
+          :show-logo-width="isLogoImage(selectedContentSlide.logo) && !(selectedContentSlide.legalRelative && selectedContentSlide.logo === defaultLogo)"
           @apply-to-aspects="applySelectedTextToAspectRatios"
         />
+
+        <CtaControls
+          v-model:text="selectedContentSlide.ctaText"
+          v-model:size="selectedContentSlide.ctaSize"
+          v-model:pulse="selectedContentSlide.ctaPulse"
+          v-model:align="selectedContentSlide.ctaAlign"
+          v-model:bottom-margin="selectedContentSlide.ctaBottomMargin"
+          :auto-bottom-margin="currentContentPlacement.cta === currentContentPlacement.legal && !!selectedContentSlide.legalText?.trim() && !!selectedContentSlide.ctaText?.trim()"
+          @apply-to-aspects="applySelectedCtaToAspectRatios"
+        />
+
+        <LogoControls
+          v-model:logo="selectedContentSlide.logo"
+          :is-logo-image="isLogoImage(selectedContentSlide.logo)"
+          :is-default-logo="selectedContentSlide.logo === defaultLogo"
+          @apply-to-aspects="applySelectedLogoToAspectRatios"
+          @use-default="useDefaultLogo"
+          @remember-scroll="rememberControlsScroll"
+          @upload="handleAssetUpload($event, 'logo')"
+          @clear="clearAsset('logo')"
+        />
+        <section class="control-section">
+          <h2>Backgrounds</h2>
+        <div class="panel-tabs" aria-label="Select background to edit">
+          <button
+            v-for="side in panelSides"
+            :key="side"
+            type="button"
+            :class="{ 'is-selected': selectedPanel === side }"
+            @click="selectPanel(side)"
+          >
+            Background {{ side === 'left' ? '1' : '2' }}
+          </button>
+        </div>
+        </section>
 
         <BackgroundSelector
           v-model:background-color="selectedSlide.backgroundColor"
@@ -4257,7 +4616,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         />
 
         <div class="control-section control-field">
-          <h2>Background media</h2>
+          <h2>Background {{ selectedPanel === 'left' ? '1' : '2' }} media</h2>
           <div class="asset-control">
             <label
               class="button button--outline upload-button"
@@ -4292,27 +4651,12 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           </label>
         </div>
 
-        <CtaControls
-          v-model:text="selectedSlide.ctaText"
-          v-model:size="selectedSlide.ctaSize"
-          v-model:pulse="selectedSlide.ctaPulse"
-          v-model:align="selectedSlide.ctaAlign"
-          v-model:bottom-margin="selectedSlide.ctaBottomMargin"
-          @apply-to-aspects="applySelectedCtaToAspectRatios"
-        />
-
-        <LogoControls
-          v-model:logo="selectedSlide.logo"
-          :is-logo-image="isLogoImage(selectedSlide.logo)"
-          :is-default-logo="selectedSlide.logo === defaultLogo"
-          @apply-to-aspects="applySelectedLogoToAspectRatios"
-          @use-default="useDefaultLogo"
-          @remember-scroll="rememberControlsScroll"
-          @upload="handleAssetUpload($event, 'logo')"
-          @clear="clearAsset('logo')"
-        />
       </template>
 
+    </aside>
+      <details class="video-settings-panel" :inert="figmaExportStatus === 'exporting'">
+        <summary><span>Video settings</span><small>{{ totalDuration.toFixed(2) }}s</small></summary>
+        <div class="video-settings-body">
       <section class="control-section packshot-control">
         <h2>Packshot</h2>
         <label class="direction-toggle">
@@ -4336,6 +4680,15 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
               step="1"
             >
             <output>{{ Math.round(packshotWidth) }}%</output>
+          </div>
+        </div>
+
+        <div v-if="showPackshotOnFinalSlide" class="control-field">
+          <label for="packshot-pause">Packshot slide pause</label>
+          <div class="range-row">
+            <input id="packshot-pause" v-model.number="packshotPauseSeconds" type="range"
+              min="0" max="10" step="0.05" :style="rangeStyle(packshotPauseSeconds, 0, 10)">
+            <output>{{ packshotPauseSeconds.toFixed(2) }}s</output>
           </div>
         </div>
 
@@ -4432,8 +4785,8 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
 
         <label class="direction-toggle">
           <span>
-            <strong>Text word fade</strong>
-            <small>Fade heading and subheading words during transitions</small>
+            <strong>Text line fade</strong>
+            <small>Stagger lines from the side in portrait, from below in landscape</small>
           </span>
           <input v-model="textLineTransition" type="checkbox">
         </label>
@@ -4699,6 +5052,8 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           Large resolutions and frame rates use significant memory.
         </p>
       </section>
-    </aside>
+        </div>
+      </details>
+    </div>
   </main>
 </template>

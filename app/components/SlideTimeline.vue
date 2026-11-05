@@ -7,6 +7,7 @@ const props = defineProps<{
   leavingIndex: number | null
   isPlaying: boolean
   firstPauseSeconds: number
+  finalPauseSeconds?: number
   pauseSeconds: number
   transitionSeconds: number
   loop: boolean
@@ -32,7 +33,7 @@ const segments = computed(() => {
   let start = 0
 
   for (let index = 0; index < props.count; index += 1) {
-    const pause = Math.max(0, index === 0 ? props.firstPauseSeconds : props.pauseSeconds)
+    const pause = Math.max(0, index === props.count - 1 && props.finalPauseSeconds !== undefined ? props.finalPauseSeconds : index === 0 ? props.firstPauseSeconds : props.pauseSeconds)
     const hasTransition = props.loop || index < props.count - 1
     const transition = hasTransition ? Math.max(0, props.transitionSeconds) : 0
     const end = start + pause + transition
@@ -126,6 +127,7 @@ watch(
     props.leavingIndex,
     props.isPlaying,
     props.firstPauseSeconds,
+    props.finalPauseSeconds,
     props.pauseSeconds,
     props.transitionSeconds,
     props.loop

@@ -1,0 +1,3 @@
+import {readFile,writeFile} from 'node:fs/promises'
+const source=await readFile(new URL('../figma-plugin/importer.js',import.meta.url),'utf8')
+await writeFile(new URL('../figma-plugin/code.js',import.meta.url),source+`\nfigma.showUI(__html__,{width:420,height:360});figma.ui.onmessage=async message=>{if(message.type!=='import')return;try{const result=await importBanner(figma,message.data);const node=await figma.getNodeByIdAsync(result.bannerId);const png=Array.from(await node.exportAsync({format:'PNG',constraint:{type:'SCALE',value:1}}));figma.ui.postMessage({result,png})}catch(error){figma.ui.postMessage({error:error.message})}};\n`)

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { cleanTextPaste } from '~/utils/text-paste'
 import { computed, ref } from 'vue'
 
 type HeadingHighlightPreset = 'white-pink' | 'purple-white'
@@ -146,6 +147,7 @@ function updateHeading(nextHeading: string) {
       <label for="heading">Heading <span>optional</span></label>
       <input
         id="heading"
+        @paste="cleanTextPaste"
         ref="input"
         :value="heading"
         placeholder="Add heading"

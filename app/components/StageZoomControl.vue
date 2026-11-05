@@ -62,6 +62,6 @@ function rangeStyle(value: number, min: number, max: number) {
     >
       +
     </button>
-    <output>{{ modelValue }}%</output>
+    <output>{{ Math.round(modelValue) }}%</output>
   </div>
 </template>

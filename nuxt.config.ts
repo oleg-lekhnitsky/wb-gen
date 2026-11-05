@@ -3,7 +3,7 @@ export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   devtools: { enabled: process.env.NUXT_RENDER_MODE !== 'true' },
   modules: ['@nuxt/fonts', '@nuxt/image'],
-  css: ['~/assets/css/global.css', '~/assets/css/narrow-layout.css', '~/assets/css/legal.css'],
+  css: ['~/assets/css/global.css', '~/assets/css/narrow-layout.css', '~/assets/css/legal.css', '~/assets/css/armenian.css'],
   runtimeConfig: {
     public: {
       rendererOrigin: ''

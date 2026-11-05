@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { cleanTextPaste } from '~/utils/text-paste'
 defineProps<{
   logo: string
   isLogoImage: boolean
@@ -32,6 +33,7 @@ const emit = defineEmits<{
     <input
       v-if="!isLogoImage"
       id="logo-text"
+        @paste="cleanTextPaste"
       :value="logo"
       placeholder="Logo text"
       @input="emit('update:logo', ($event.target as HTMLInputElement).value)"

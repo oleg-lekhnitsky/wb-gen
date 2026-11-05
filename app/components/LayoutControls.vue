@@ -1,5 +1,5 @@
 <script setup lang="ts">
-type ContentLayoutPreset = 'stacked' | 'adaptive-split'
+import type { ContentLayoutPreset } from '~/utils/content-placement'
 
 defineProps<{
   modelValue: ContentLayoutPreset
@@ -15,14 +15,19 @@ const presets: Array<{
   description: string
 }> = [
   {
+    value: 'per-format',
+    label: 'Per-format placement',
+    description: 'Enter content once; choose a panel for each element in every format'
+  },
+  {
     value: 'stacked',
     label: 'Stacked',
-    description: 'Keep every element in one vertical stack'
+    description: 'Edit the text, logo and button separately for each panel'
   },
   {
     value: 'adaptive-split',
     label: 'Top / bottom',
-    description: 'Copy in the top panel; logo and legal in the bottom panel'
+    description: 'Share content: copy and button above, logo and legal below. In landscape, content stays on the left.'
   }
 ]
 </script>

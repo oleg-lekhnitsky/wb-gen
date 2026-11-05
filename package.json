@@ -3,6 +3,8 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "figma:build": "node scripts/build-figma-plugin.mjs",
+    "test:export": "node --experimental-strip-types --test tests/export-contract.test.ts",
     "build": "nuxt build",
     "dev": "nuxt dev",
     "renderer:local": "NUXT_RENDER_MODE=true nuxt dev --host 127.0.0.1 --port 3000",

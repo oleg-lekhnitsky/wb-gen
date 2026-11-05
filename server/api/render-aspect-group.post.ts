@@ -1,5 +1,6 @@
 import { chromium } from 'playwright'
 import sharp from 'sharp'
+import { assertExportAssetsReady } from '../utils/export-contract'
 
 type AspectPreset = {
   label: string
@@ -155,7 +156,7 @@ function renderViewportCss(
   const scaleY = height / layoutHeight
 
   return `
-    .animation-controls, .preview-toolbar, .aspect-preview-control {
+    .editor-right-sidebar, .animation-controls, .preview-toolbar, .aspect-preview-control {
       visibility: hidden !important;
       pointer-events: none !important;
     }
@@ -182,8 +183,11 @@ function renderViewportCss(
       overflow: visible !important;
       border-radius: 0 !important;
     }
+    .canvas-viewport { display: contents !important; }
     .stage-zoom-frame,
     .stage-zoom-frame.is-portrait {
+      position: static !important;
+      transform: none !important;
       --stage-preview-zoom: 1 !important;
       width: ${width}px !important;
       height: ${height}px !important;
@@ -198,6 +202,14 @@ function renderViewportCss(
       transform-origin: top left !important;
       aspect-ratio: ${aspectWidth} / ${aspectHeight} !important;
     }
+    /* Still exports use the same complete SVG wordmark as the paused preview.
+       CSS animation disabling does not stop Lottie's JavaScript timeline. */
+    .slot-stage--main .animated-brand-logo {
+      opacity: 1 !important;
+      transition: none !important;
+    }
+    .slot-stage--main .animated-brand-logo > img { visibility: visible !important; }
+    .slot-stage--main .animated-brand-logo__motion { display: none !important; }
     .draggable-background__handle {
       display: none !important;
     }
@@ -343,6 +355,7 @@ export default defineEventHandler(async event => {
         })
         await page.evaluate(({ selectedIndex, showPackshotOnFinalSlide, packshotWidth }) => {
           const root = document.querySelector('.slot-stage--main')
+          root?.classList.add('is-snapping')
           root?.querySelectorAll<HTMLElement>('.slot-panel').forEach(panel => {
             panel.querySelectorAll<HTMLElement>('.slot-slide').forEach((slide, index) => {
               slide.style.opacity = index === selectedIndex ? '1' : '0'
@@ -362,6 +375,7 @@ export default defineEventHandler(async event => {
           packshotWidth: Math.max(5, Math.min(100, Math.round(settings.packshotWidth || 28)))
         })
 
+        await assertExportAssetsReady(page)
         const data = await page.locator('.slot-stage--main').screenshot({
           animations: 'disabled',
           scale: 'css'

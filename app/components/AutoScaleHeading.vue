@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { fitHeading, headingFitsAtScale } from '~/utils/heading-fit'
 
 type CopyWord = {
   text: string
@@ -7,6 +8,7 @@ type CopyWord = {
   end: number
   animationIndex: number
   breakAfter: boolean
+  highlightIndex?: number
   highlight?: 'white-pink' | 'purple-white'
 }
 
@@ -17,6 +19,7 @@ type FittedLine = {
 const props = defineProps<{
   words: CopyWord[]
   headingSize: number
+  delays: number[]
 }>()
 
 const createFallbackLines = (words: CopyWord[]): FittedLine[] => (
@@ -30,8 +33,8 @@ const lines = ref<FittedLine[]>(createFallbackLines(props.words))
 const headingScale = ref(1)
 let resizeObserver: ResizeObserver | undefined
 let measureFrame = 0
-const groupedLineTolerance = 1.3
-const shortWordRatio = 0.8
+let measureVersion = 0
+let mutationObserver: MutationObserver | undefined
 
 function getLayoutWidth(element: HTMLElement) {
   const computedWidth = Number.parseFloat(getComputedStyle(element).width)
@@ -47,115 +50,127 @@ function setFittedLine(element: unknown, index: number) {
   if (element instanceof HTMLElement) fittedLines.value[index] = element
 }
 
+function relativeHeight(element: HTMLElement, headingSize: number) {
+  const ratio = Number(element.dataset.relativeFontRatio)
+  const style = getComputedStyle(element)
+  if (style.display === 'none' || style.position === 'absolute') return 0
+  if (!(ratio > 0)) return element.offsetHeight
+  if (element.dataset.relativeLogoWidthRatio) return headingSize * ratio
+  const fontSize = Math.ceil(headingSize * ratio * 100) / 100
+  if (fontSize <= 0) return 0
+  // Measure wrapping outside the stage so probes never retrigger Vue observers.
+  const probe = element.cloneNode(true) as HTMLElement
+  probe.removeAttribute('id')
+  probe.className = ''
+  probe.style.cssText = ''
+  for (const property of ['font-family','font-weight','font-style','font-stretch','font-variation-settings','font-feature-settings','letter-spacing','text-transform','white-space','word-break','overflow-wrap']) {
+    probe.style.setProperty(property, style.getPropertyValue(property))
+  }
+  Object.assign(probe.style, { position:'fixed', visibility:'hidden', pointerEvents:'none', left:'0', top:'0', display:'block',
+    width:`${parseFloat(style.width)}px`, height:'auto', margin:'0', padding:'0', border:'0',
+    fontSize:`${fontSize}px`, lineHeight:style.lineHeight === 'normal' ? 'normal' : String(parseFloat(style.lineHeight) / parseFloat(style.fontSize) || 1) })
+  document.body.appendChild(probe)
+  const height = probe.offsetHeight
+  probe.remove()
+  return height
+}
+
+function availableHeadingHeight(sourceElement: HTMLElement, headingSize?: number) {
+  const copy = sourceElement.closest<HTMLElement>('.slide-copy')
+  const panel = copy?.closest<HTMLElement>('.slide-content')
+  if (!copy || !panel) return 0
+  const css = getComputedStyle(panel)
+  const extent = (element: HTMLElement) => {
+    const style = getComputedStyle(element)
+    if (style.display === 'none' || style.position === 'absolute') return 0
+    return (headingSize === undefined ? element.offsetHeight : relativeHeight(element, headingSize)) + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0)
+  }
+  const subheading = copy.querySelector<HTMLElement>('.slide-subheading')
+  let height: number
+  if (css.display === 'grid') {
+    // Narrow banners place the copy and logo beside each other in row one.
+    height = parseFloat(css.gridTemplateRows) || 0
+  } else {
+    const footer = Array.from(panel.children).filter(child => child !== copy)
+      .reduce((sum, child) => sum + extent(child as HTMLElement), 0)
+    height = panel.clientHeight - (parseFloat(css.paddingTop) || 0)
+      - (parseFloat(css.paddingBottom) || 0) - footer
+  }
+  return Math.max(0, height - (subheading ? extent(subheading) : 0) - 1)
+}
+
 function measureLines() {
+  const version = ++measureVersion
   cancelAnimationFrame(measureFrame)
   measureFrame = requestAnimationFrame(async () => {
     await nextTick()
-
+    if (version !== measureVersion) return
     const sourceElement = source.value
     const elements = sourceWords.value.slice(0, props.words.length)
     if (!sourceElement || elements.length !== props.words.length || !elements.length) return
-
-    const availableWidth = sourceElement.clientWidth
-    if (availableWidth <= 0) return
-
-    const measuredWords = elements.map((element, index) => ({
-      word: props.words[index]!,
-      // Layout widths ignore preview zoom and the scaleX(0)/scaleY(0) used by
-      // inactive slides, so every slide can fit before it becomes visible.
+    const width = sourceElement.clientWidth
+    if (width <= 0) return
+    const height = availableHeadingHeight(sourceElement)
+    const lineHeight = parseFloat(getComputedStyle(sourceElement).lineHeight)
+    const measured = elements.map((element, index) => ({
       width: getLayoutWidth(element),
-      gap: Number.parseFloat(getComputedStyle(element).marginRight) || 0
+      gap: parseFloat(getComputedStyle(element).marginRight) || 0,
+      breakAfter: props.words[index]!.breakAfter
     }))
-    if (measuredWords.some(word => word.width <= 0)) return
-
-    const longestWordWidth = Math.max(...measuredWords.map(word => word.width))
-    const groupedLineLimit = longestWordWidth * groupedLineTolerance
-    const shortWordLimit = longestWordWidth * shortWordRatio
-    const bestCosts = Array.from({ length: measuredWords.length + 1 }, () => Number.POSITIVE_INFINITY)
-    const lineWordCounts = Array.from({ length: measuredWords.length }, () => 1)
-    bestCosts[measuredWords.length] = 0
-
-    const raggedness = (width: number) => {
-      const difference = Math.abs(longestWordWidth - width) / longestWordWidth
-      return difference * difference
-    }
-
-    // Balance the whole heading instead of accepting the first possible group.
-    // Long words stay independent; runs of short words may form longer phrases.
-    for (let index = measuredWords.length - 1; index >= 0; index -= 1) {
-      const word = measuredWords[index]!
-      bestCosts[index] = raggedness(word.width) + bestCosts[index + 1]!
-
-      if (word.width > shortWordLimit) continue
-
-      let groupWidth = word.width
-      for (let end = index + 1; end < measuredWords.length; end += 1) {
-        const previousWord = measuredWords[end - 1]!
-        const nextWord = measuredWords[end]!
-        if (previousWord.word.breakAfter || nextWord.width > shortWordLimit) break
-
-        groupWidth += previousWord.gap + nextWord.width
-        if (groupWidth > groupedLineLimit) break
-
-        const wordCount = end - index + 1
-        const groupCost = raggedness(groupWidth) + bestCosts[end + 1]!
-        if (groupCost < bestCosts[index]!) {
-          bestCosts[index] = groupCost
-          lineWordCounts[index] = wordCount
-        }
+    if (measured.some(word => word.width <= 0)) return
+    const panel = sourceElement.closest('.slide-content')
+    const hasRelative = Array.from(panel?.querySelectorAll<HTMLElement>('[data-relative-font-ratio]') || [])
+      .some(element => getComputedStyle(element).display !== 'none')
+    let fittedHeight = height, fittedWidth = width, scaleLimit = 1
+    if (hasRelative) {
+      const maximumFont = parseFloat(getComputedStyle(sourceElement).fontSize)
+      const grid = panel && getComputedStyle(panel).display === 'grid'
+      const logo = panel?.querySelector<HTMLElement>('.slide-logo[data-relative-logo-width-ratio]')
+      const budgetWidth = (scale: number) => grid && logo && getComputedStyle(logo).display !== 'none'
+        ? Math.max(0, width + logo.offsetWidth - maximumFont * scale * Number(logo.dataset.relativeLogoWidthRatio)) : width
+      let low = 0, high = 1
+      for (let iteration = 0; iteration < 18; iteration++) {
+        const scale = (low + high) / 2
+        const budget = availableHeadingHeight(sourceElement, maximumFont * scale)
+        const logoFits = Array.from(panel?.querySelectorAll<HTMLElement>('[data-relative-logo-width-ratio]') || [])
+          .filter(element => getComputedStyle(element).display !== 'none')
+          .every(element => grid
+            ? maximumFont * scale * Number(element.dataset.relativeFontRatio) <= (parseFloat(getComputedStyle(panel!).gridTemplateRows) || 0)
+            : maximumFont * scale * Number(element.dataset.relativeLogoWidthRatio) <= element.clientWidth)
+        if (logoFits && headingFitsAtScale(measured, budgetWidth(scale), budget, lineHeight, scale)) low = scale
+        else high = scale
       }
+      scaleLimit = low
+      fittedHeight = availableHeadingHeight(sourceElement, maximumFont * scaleLimit)
+      fittedWidth = budgetWidth(scaleLimit)
     }
-
-    const grouped: Array<{
-      words: CopyWord[]
-      width: number
-    }> = []
-
-    for (let index = 0; index < measuredWords.length; index += 1) {
-      const measuredWord = measuredWords[index]!
-      const wordCount = lineWordCounts[index]!
-      if (wordCount > 1) {
-        const lineWords = measuredWords.slice(index, index + wordCount)
-        grouped.push({
-          words: lineWords.map(word => word.word),
-          width: lineWords.reduce((width, word, lineIndex) => (
-            width + word.width + (lineIndex > 0 ? lineWords[lineIndex - 1]!.gap : 0)
-          ), 0)
-        })
-        index += wordCount - 1
-      } else {
-        grouped.push({
-          words: [measuredWord.word],
-          width: measuredWord.width
-        })
-      }
-    }
-
-    const measuredLines = grouped.map((line) => {
-      return {
-        words: line.words,
-        width: Math.max(1, line.width)
-      }
-    })
-    const widestLineWidth = Math.max(...measuredLines.map(line => line.width))
-    const nextScale = availableWidth / widestLineWidth
-    const nextLines = measuredLines.map(({ words }) => ({ words }))
-
-    lines.value = nextLines
-    headingScale.value = nextScale
-    await nextTick()
-
-    // The browser's final glyph rounding can differ slightly from the hidden
-    // reference. Correct the one shared scale against the widest visible line.
-    const widestRenderedLine = Math.max(
-      ...fittedLines.value
-        .slice(0, nextLines.length)
-        .map(getLayoutWidth)
-    )
-    if (Number.isFinite(widestRenderedLine) && widestRenderedLine > 0) {
-      headingScale.value = nextScale * availableWidth / widestRenderedLine
+    const fitted = fitHeading(measured, fittedWidth, fittedHeight, lineHeight)
+    lines.value = fitted.lines.map(indices => ({ words: indices.map(index => props.words[index]!) }))
+    headingScale.value = Math.min(scaleLimit, fitted.scale)
+    // Correct rounding against final browser layout without exceeding the cap.
+    for (let pass = 0; pass < 2; pass++) {
+      await nextTick()
+      if (version !== measureVersion) return
+      const rendered = fittedLines.value.slice(0, fitted.lines.length)
+      const widest = Math.max(0, ...rendered.map(getLayoutWidth))
+      const heading = rendered[0]?.closest<HTMLElement>('h2')
+      const actualHeight = heading?.offsetHeight || 0
+      const correction = Math.min(1, widest > 0 ? fittedWidth / widest : 1,
+        actualHeight > 0 ? fittedHeight / actualHeight : 1)
+      if (correction >= 1) break
+      headingScale.value *= correction
     }
   })
+}
+
+function observeLayout() {
+  resizeObserver?.disconnect()
+  if (source.value) resizeObserver?.observe(source.value)
+  const panel = source.value?.closest('.slide-content')
+  if (!panel) return
+  resizeObserver?.observe(panel)
+  panel.querySelectorAll<HTMLElement>('.slide-logo, .slide-cta, .slide-legal, .slide-subheading')
+    .forEach(element => resizeObserver?.observe(element))
 }
 
 watch(
@@ -172,12 +187,19 @@ watch(() => props.headingSize, measureLines)
 
 onMounted(() => {
   resizeObserver = new ResizeObserver(measureLines)
-  if (source.value) resizeObserver.observe(source.value)
+  observeLayout()
+  mutationObserver = new MutationObserver(() => { observeLayout(); measureLines() })
+  const copy = source.value?.closest('.slide-copy')
+  const panel = copy?.closest('.slide-content')
+  if (panel) mutationObserver.observe(panel, { attributes: true, attributeFilter: ['class', 'style'], childList: true })
+  if (copy) mutationObserver.observe(copy, { childList: true })
   document.fonts?.ready.then(measureLines)
   measureLines()
 })
 
 onBeforeUnmount(() => {
+  ++measureVersion
+  mutationObserver?.disconnect()
   resizeObserver?.disconnect()
   cancelAnimationFrame(measureFrame)
 })
@@ -220,7 +242,7 @@ onBeforeUnmount(() => {
           { 'has-word-gap': wordIndex < line.words.length - 1 },
           word.highlight ? `has-heading-highlight--${word.highlight}` : ''
         ]"
-        :style="{ '--word-delay': `${word.animationIndex * 25}ms` }"
+        :style="{ '--word-delay': `${delays[word.animationIndex] ?? 0}ms`, '--highlight-stagger': `${(word.highlightIndex ?? 0) * 120}ms` }"
       >{{ word.text }}</span>
     </span>
   </h2>

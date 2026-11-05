@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import RelativeText from '~/components/RelativeText.vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { placementClasses } from '~/utils/content-placement'
+import type { ContentPlacement, ContentLayoutPreset } from '~/utils/content-placement'
 import AnimatedSlideCopy from '~/components/AnimatedSlideCopy.vue'
 import AspectGroupRenderControl from '~/components/AspectGroupRenderControl.vue'
 import DraggableBackground from '~/components/DraggableBackground.vue'
@@ -37,10 +40,13 @@ type PreviewSlide = {
     end: number
     preset: 'white-pink' | 'purple-white'
   }>
+  textAlign?: 'left' | 'center'
   headingSize: number
   headingAutoScale?: boolean
   subheading: string
   subheadingSize: number
+  subheadingRelative?: boolean
+  subheadingHeadingRatio?: number
   ctaText?: string
   ctaSize?: number
   ctaPulse?: boolean
@@ -51,6 +57,8 @@ type PreviewSlide = {
   logoHeight: number
   legalText: string
   legalSize: number
+  legalRelative?: boolean
+  legalHeadingRatio?: number
   legalOpacity: number
   legalShadow: boolean
   legalShadowOpacity: number
@@ -63,13 +71,16 @@ const props = defineProps<{
   activeHeight: number
   getSlides: (preset: AspectPreset) => { left: PreviewSlide, right: PreviewSlide }
   getBackgroundStyle: (slide: PreviewSlide, preset: AspectPreset) => Record<string, string | number>
+  defaultLogo: string
   isLogoImage: (logo: string) => boolean
-  getLogoSource: (slide: PreviewSlide) => string
+  getLogoSource: (slide: PreviewSlide, backgroundSlide?: PreviewSlide) => string
   hasWhiteBackground: (slide: PreviewSlide) => boolean
   swapVerticalPanels: boolean
   swapHorizontalPanels: boolean
   swapUltraNarrowPanels: boolean
-  contentLayoutPreset: 'stacked' | 'adaptive-split'
+  contentLayoutPreset: ContentLayoutPreset
+  getContentPlacement: (preset: AspectPreset) => ContentPlacement
+  getSharedContent: (preset: AspectPreset) => PreviewSlide | undefined
   renderDisabled?: boolean
   isRendering?: boolean
   renderProgress?: number
@@ -87,7 +98,6 @@ const emit = defineEmits<{
 
 const width = ref(props.activeWidth)
 const height = ref(props.activeHeight)
-const isCollapsed = ref(false)
 const activePack = ref(props.packs?.[0]?.id || '')
 const shouldSelectNewPack = ref(false)
 const editingPack = ref('')
@@ -96,18 +106,6 @@ const editingPackWidth = ref(0)
 const editingPackHeight = ref(0)
 const root = ref<HTMLElement | null>(null)
 const packScroller = ref<HTMLElement | null>(null)
-const panelX = ref(40)
-const panelY = ref(40)
-let activeDrag:
-  | {
-    pointerId: number
-    startClientX: number
-    startClientY: number
-    startX: number
-    startY: number
-  }
-  | null = null
-
 const validSize = computed(() => (
   Number.isFinite(width.value)
   && Number.isFinite(height.value)
@@ -116,12 +114,6 @@ const validSize = computed(() => (
   && width.value <= 3840
   && height.value <= 3840
 ))
-
-const panelStyle = computed(() => ({
-  top: `${panelY.value}px`,
-  right: 'auto',
-  left: `${panelX.value}px`
-}))
 
 function sortAspectPresets(presets: AspectPreset[]) {
   return [...presets].sort((a, b) => {
@@ -147,56 +139,6 @@ const visiblePresets = computed(() => {
 const activePackLabel = computed(() =>
   props.packs?.find(pack => pack.id === activePack.value)?.label || 'Aspects'
 )
-
-function clampPanelPosition(x: number, y: number) {
-  const margin = 12
-  const element = root.value
-  const width = element?.offsetWidth || 360
-  const height = element?.offsetHeight || 120
-  const maxX = Math.max(margin, window.innerWidth - width - margin)
-  const maxY = Math.max(margin, window.innerHeight - height - margin)
-
-  return {
-    x: Math.max(margin, Math.min(x, maxX)),
-    y: Math.max(margin, Math.min(y, maxY))
-  }
-}
-
-function beginDrag(event: PointerEvent) {
-  if (event.button !== 0) return
-  activeDrag = {
-    pointerId: event.pointerId,
-    startClientX: event.clientX,
-    startClientY: event.clientY,
-    startX: panelX.value,
-    startY: panelY.value
-  }
-  root.value?.setPointerCapture(event.pointerId)
-  window.addEventListener('pointermove', handleDrag)
-  window.addEventListener('pointerup', endDrag)
-  window.addEventListener('pointercancel', endDrag)
-}
-
-function handleDrag(event: PointerEvent) {
-  if (!activeDrag || event.pointerId !== activeDrag.pointerId) return
-  event.preventDefault()
-
-  const next = clampPanelPosition(
-    activeDrag.startX + event.clientX - activeDrag.startClientX,
-    activeDrag.startY + event.clientY - activeDrag.startClientY
-  )
-  panelX.value = next.x
-  panelY.value = next.y
-}
-
-function endDrag(event: PointerEvent) {
-  if (!activeDrag || event.pointerId !== activeDrag.pointerId) return
-  root.value?.releasePointerCapture(event.pointerId)
-  activeDrag = null
-  window.removeEventListener('pointermove', handleDrag)
-  window.removeEventListener('pointerup', endDrag)
-  window.removeEventListener('pointercancel', endDrag)
-}
 
 function isActive(preset: AspectPreset) {
   return props.activeWidth === preset.width && props.activeHeight === preset.height
@@ -259,6 +201,7 @@ function getPreviewSlides(preset: AspectPreset) {
 }
 
 function getPreviewContentSlide(preset: AspectPreset, slide: PreviewSlide) {
+  if (props.contentLayoutPreset === 'per-format') return props.getSharedContent(preset) ?? slide
   if (props.contentLayoutPreset !== 'adaptive-split') return slide
   return getPreviewSlides(preset)[0] ?? slide
 }
@@ -327,13 +270,6 @@ function getSlideStyle(slide: PreviewSlide, preset: AspectPreset) {
   return props.getBackgroundStyle(slide, preset)
 }
 
-onBeforeUnmount(() => {
-  if (!activeDrag) return
-  activeDrag = null
-  window.removeEventListener('pointermove', handleDrag)
-  window.removeEventListener('pointerup', endDrag)
-  window.removeEventListener('pointercancel', endDrag)
-})
 
 watch(
   () => props.packs,
@@ -382,24 +318,15 @@ watch(
   <section
     ref="root"
     class="aspect-preview-control"
-    :class="{ 'is-collapsed': isCollapsed }"
-    :style="panelStyle"
   >
-    <div class="aspect-preview-heading" @pointerdown="beginDrag">
+    <div class="aspect-preview-heading">
       <label>Aspect preview</label>
       <span>[{{ visiblePresets.length }}]</span>
-      <button
-        type="button"
-        class="button button--ghost button--pill button--sm"
-        @pointerdown.stop
-        @click="isCollapsed = !isCollapsed"
-      >
-        {{ isCollapsed ? 'Open' : 'Hide' }}
-      </button>
+
       
     </div>
 
-    <div v-if="!isCollapsed" class="aspect-preview-scroll">
+    <div class="aspect-preview-scroll">
       <div v-if="packs?.length" class="aspect-pack-tabs">
         <div ref="packScroller" class="aspect-pack-tabs__scroller">
           <span
@@ -508,7 +435,8 @@ watch(
               :class="{
                 'is-portrait': isPortrait(preset),
                 'is-ultra-narrow': isUltraNarrow(preset),
-                'has-adaptive-content-layout': contentLayoutPreset === 'adaptive-split'
+                'has-adaptive-content-layout': contentLayoutPreset === 'adaptive-split',
+                'has-format-content-layout': contentLayoutPreset === 'per-format'
               }"
               :style="{ aspectRatio: `${preset.width} / ${preset.height}` }"
             >
@@ -538,8 +466,10 @@ watch(
                   />
                   <span
                     class="slide-content"
+                :data-text-align="getPreviewContentSlide(preset, slide).textAlign || 'left'"
                     :class="{
-                      'has-brand-pink-text': hasWhiteBackground(getPreviewContentSlide(preset, slide))
+                      'has-brand-pink-text': hasWhiteBackground(contentLayoutPreset === 'per-format' ? slide : getPreviewContentSlide(preset, slide)),
+                      ...(contentLayoutPreset === 'per-format' ? placementClasses(getContentPlacement(preset), slideIndex === 0 ? 'first' : 'second', getPreviewContentSlide(preset, slide)) : {})
                     }"
                     :style="{
                       '--logo-width': `${getPreviewContentSlide(preset, slide).logoWidth}%`
@@ -553,7 +483,10 @@ watch(
                       :bottom-margin="getPreviewContentSlide(preset, slide).ctaBottomMargin"
                     />
 
-                    <span
+                    <RelativeText
+                      kind="logo"
+                      :relative="!!getPreviewContentSlide(preset, slide).legalRelative && getPreviewContentSlide(preset, slide).logo === defaultLogo"
+                      :heading-size="getPreviewContentSlide(preset, slide).headingSize"
                       class="slide-logo"
                       :class="{
                         'has-logo-image': isLogoImage(getPreviewContentSlide(preset, slide).logo),
@@ -562,7 +495,7 @@ watch(
                     >
                       <img
                         v-if="isLogoImage(getPreviewContentSlide(preset, slide).logo)"
-                        :src="getLogoSource(getPreviewContentSlide(preset, slide))"
+                        :src="getLogoSource(getPreviewContentSlide(preset, slide), slide)"
                         :style="{
                           width: isUltraNarrow(preset)
                             ? '100%'
@@ -574,7 +507,7 @@ watch(
                       <span v-else-if="getPreviewContentSlide(preset, slide).logo">
                         {{ getPreviewContentSlide(preset, slide).logo }}
                       </span>
-                    </span>
+                    </RelativeText>
 
                     <AnimatedSlideCopy
                       :heading="getPreviewContentSlide(preset, slide).heading"
@@ -583,18 +516,27 @@ watch(
                       :heading-auto-scale="getPreviewContentSlide(preset, slide).headingAutoScale"
                       :subheading="getPreviewContentSlide(preset, slide).subheading"
                       :subheading-size="getPreviewContentSlide(preset, slide).subheadingSize"
+                      :text-align="getPreviewContentSlide(preset, slide).textAlign"
+                      :subheading-relative="getPreviewContentSlide(preset, slide).subheadingRelative"
+                      :subheading-heading-ratio="getPreviewContentSlide(preset, slide).subheadingHeadingRatio"
                     />
 
-                    <span
+                    <RelativeText
+                      :relative="getPreviewContentSlide(preset, slide).legalRelative"
+                      :ratio="getPreviewContentSlide(preset, slide).legalHeadingRatio"
+                      :heading-size="getPreviewContentSlide(preset, slide).headingSize"
                       v-if="getPreviewContentSlide(preset, slide).legalText"
                       class="slide-legal"
                       :style="{
                         '--legal-scale': getPreviewContentSlide(preset, slide).legalSize / 100,
-                        '--legal-opacity': getPreviewContentSlide(preset, slide).legalOpacity / 100
+                        '--legal-opacity': getPreviewContentSlide(preset, slide).legalOpacity / 100,
+                        '--legal-shadow': getPreviewContentSlide(preset, slide).legalShadow
+                          ? `0 1px 3px rgb(0 0 0 / ${getPreviewContentSlide(preset, slide).legalShadowOpacity}%)`
+                          : 'none'
                       }"
                     >
                       {{ getPreviewContentSlide(preset, slide).legalText }}
-                    </span>
+                    </RelativeText>
                   </span>
                 </span>
               </span>
@@ -622,7 +564,6 @@ watch(
     </div>
 
     <AspectGroupRenderControl
-      v-if="!isCollapsed"
       :group-label="activePackLabel"
       :count="visiblePresets.length"
       :disabled="renderDisabled"
