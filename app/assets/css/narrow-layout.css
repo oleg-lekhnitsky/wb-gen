@@ -118,7 +118,7 @@
   min-width: 0;
   overflow: visible;
   font-size: calc(8px * var(--legal-scale, 1));
-  line-height: 1.1;
+  line-height: var(--legal-line-height);
   overflow-wrap: anywhere;
   text-overflow: clip;
   white-space: normal;

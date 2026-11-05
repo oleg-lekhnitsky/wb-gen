@@ -71,6 +71,9 @@ const props = defineProps<{
   activeHeight: number
   getSlides: (preset: AspectPreset) => { left: PreviewSlide, right: PreviewSlide }
   getBackgroundStyle: (slide: PreviewSlide, preset: AspectPreset) => Record<string, string | number>
+  showPackshot?: boolean
+  packshotSource?: string
+  getPackshotWidth?: (preset: AspectPreset) => number
   defaultLogo: string
   isLogoImage: (logo: string) => boolean
   getLogoSource: (slide: PreviewSlide, backgroundSlide?: PreviewSlide) => string
@@ -545,6 +548,10 @@ watch(
                     </RelativeText>
                   </span>
                 </span>
+              </span>
+              <span v-if="showPackshot && packshotSource" class="packshot-overlay is-visible"
+                :style="{ width: `${getPackshotWidth?.(preset) ?? 28}%` }">
+                <img :src="packshotSource" class="packshot-animation" alt="">
               </span>
             </span>
           </span>

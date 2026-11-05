@@ -58,6 +58,7 @@
   --controls-font-icon: 14px;
   --controls-font-stepper: 18px;
   --controls-font-section-title: 20px;
+  --controls-heading-tracking: -.03em;
   --controls-font-export-title: 20px;
   --controls-font-stat: 24px;
   --controls-font-page-title: 32px;
@@ -347,7 +348,6 @@ button {
 }
 
 .slot-stage.is-snapping .packshot-overlay {
-  opacity: 0 !important;
   transition: none !important;
 }
 
@@ -1446,6 +1446,7 @@ button {
   padding: 18px var(--controls-panel-padding);
   font-size: var(--controls-font-section-title);
   font-weight: 700;
+  letter-spacing: var(--controls-heading-tracking);
   cursor: pointer;
   list-style: none;
 }
@@ -1488,7 +1489,7 @@ button {
   color: var(--controls-text);
   font-size: var(--controls-font-section-title);
   font-weight: 700;
-  letter-spacing: -.03em;
+  letter-spacing: var(--controls-heading-tracking);
 }
 
 .control-section {
@@ -3362,4 +3363,16 @@ body.is-slide-capture #nuxt-devtools-container { display: none !important; }
   height: 28px;
   min-height: 28px;
   padding-block: 4px;
+}
+
+.preset-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.preset-actions > button {
+  min-width: 0;
+  white-space: normal;
+}
+.preset-actions > button:last-of-type {
+  grid-column: 1 / -1;
 }

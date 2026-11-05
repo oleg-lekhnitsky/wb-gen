@@ -8,6 +8,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   import: [value: unknown]
+  defaults: []
   error: [message: string]
 }>()
 
@@ -47,12 +48,15 @@ async function importPreset(event: Event) {
 </script>
 
 <template>
-  <div class="asset-control">
+  <div class="asset-control preset-actions">
     <button type="button" class="button button--outline upload-button" @click="exportPreset">
       Export preset
     </button>
     <button type="button" class="button button--outline upload-button" @click="choosePresetFile">
       Import preset
+    </button>
+    <button type="button" class="button button--outline upload-button" @click="emit('defaults')">
+      Load default layouts
     </button>
     <input
       ref="presetInput"

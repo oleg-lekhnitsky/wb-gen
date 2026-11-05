@@ -28,6 +28,8 @@ import UndoShortcut from '~/components/UndoShortcut.vue'
 import packshotAnimationData from '~/assets/packshot.json'
 import defaultLogo from '~/assets/wb taxi.svg'
 import defaultLogoSvg from '~/assets/wb taxi.svg?raw'
+import defaultLayoutSettings from '~/assets/default-layout-settings.json'
+import defaultLayoutPhoto from '~/assets/default-layout-photo.png?url'
 import legalFontUrl from '~/assets/WBResizerLegal-Regular.ttf?url'
 import condensedLegalFontUrl from '~/assets/WBResizerLegalCondensed-Regular.ttf?url'
 import legalFontLicense from '~/assets/RobotoFlex-OFL.txt?raw'
@@ -298,162 +300,8 @@ const purpleLetterDefaultLogo = `data:image/svg+xml;charset=utf-8,${encodeURICom
   defaultLogoSvg.replaceAll('fill="#FF00FF"', 'fill="#7f30e3"')
 )}`
 const panelSlides = ref<Record<PanelSide, Slide[]>>({
-  left: [
-    {
-      backgroundImage: '',
-      backgroundColor: '#ff00ff',
-      backgroundPreset: 'solid',
-      splitAngle: 90,
-      checkerCells: 6,
-      heading: 'Left slide 1',
-      headingSize: 100,
-      subheading: 'Subheading',
-      subheadingSize: 100,
-      logo: 'Logo',
-      logoWidth: 40,
-      logoHeight: 52,
-      legalText: 'Legal text',
-      legalSize: 100,
-      legalOpacity: 72,
-      legalShadow: false,
-      legalShadowOpacity: 35
-    },
-    {
-      backgroundImage: '',
-      backgroundColor: '#7f30e3',
-      backgroundPreset: 'solid',
-      splitAngle: 90,
-      checkerCells: 6,
-      heading: 'Left slide 2',
-      headingSize: 100,
-      subheading: 'Subheading',
-      subheadingSize: 100,
-      logo: 'Logo',
-      logoWidth: 40,
-      logoHeight: 52,
-      legalText: 'Legal text',
-      legalSize: 100,
-      legalOpacity: 72,
-      legalShadow: false,
-      legalShadowOpacity: 35
-    },
-    {
-      backgroundImage: '',
-      backgroundColor: '#ff00ff',
-      backgroundPreset: 'solid',
-      splitAngle: 90,
-      checkerCells: 6,
-      heading: 'Left slide 3',
-      headingSize: 100,
-      subheading: 'Subheading',
-      subheadingSize: 100,
-      logo: 'Logo',
-      logoWidth: 40,
-      logoHeight: 52,
-      legalText: 'Legal text',
-      legalSize: 100,
-      legalOpacity: 72,
-      legalShadow: false,
-      legalShadowOpacity: 35
-    },
-    {
-      backgroundImage: '',
-      backgroundColor: '#7f30e3',
-      backgroundPreset: 'solid',
-      splitAngle: 90,
-      checkerCells: 6,
-      heading: 'Left slide 4',
-      headingSize: 100,
-      subheading: 'Subheading',
-      subheadingSize: 100,
-      logo: 'Logo',
-      logoWidth: 40,
-      logoHeight: 52,
-      legalText: 'Legal text',
-      legalSize: 100,
-      legalOpacity: 72,
-      legalShadow: false,
-      legalShadowOpacity: 35
-    }
-  ],
-  right: [
-    {
-      backgroundImage: '',
-      backgroundColor: '#7f30e3',
-      backgroundPreset: 'solid',
-      splitAngle: 90,
-      checkerCells: 6,
-      heading: 'Right slide 1',
-      headingSize: 100,
-      subheading: 'Subheading',
-      subheadingSize: 100,
-      logo: 'Logo',
-      logoWidth: 40,
-      logoHeight: 52,
-      legalText: 'Legal text',
-      legalSize: 100,
-      legalOpacity: 72,
-      legalShadow: false,
-      legalShadowOpacity: 35
-    },
-    {
-      backgroundImage: '',
-      backgroundColor: '#ff00ff',
-      backgroundPreset: 'solid',
-      splitAngle: 90,
-      checkerCells: 6,
-      heading: 'Right slide 2',
-      headingSize: 100,
-      subheading: 'Subheading',
-      subheadingSize: 100,
-      logo: 'Logo',
-      logoWidth: 40,
-      logoHeight: 52,
-      legalText: 'Legal text',
-      legalSize: 100,
-      legalOpacity: 72,
-      legalShadow: false,
-      legalShadowOpacity: 35
-    },
-    {
-      backgroundImage: '',
-      backgroundColor: '#7f30e3',
-      backgroundPreset: 'solid',
-      splitAngle: 90,
-      checkerCells: 6,
-      heading: 'Right slide 3',
-      headingSize: 100,
-      subheading: 'Subheading',
-      subheadingSize: 100,
-      logo: 'Logo',
-      logoWidth: 40,
-      logoHeight: 52,
-      legalText: 'Legal text',
-      legalSize: 100,
-      legalOpacity: 72,
-      legalShadow: false,
-      legalShadowOpacity: 35
-    },
-    {
-      backgroundImage: '',
-      backgroundColor: '#ff00ff',
-      backgroundPreset: 'solid',
-      splitAngle: 90,
-      checkerCells: 6,
-      heading: 'Right slide 4',
-      headingSize: 100,
-      subheading: 'Subheading',
-      subheadingSize: 100,
-      logo: 'Logo',
-      logoWidth: 40,
-      logoHeight: 52,
-      legalText: 'Legal text',
-      legalSize: 100,
-      legalOpacity: 72,
-      legalShadow: false,
-      legalShadowOpacity: 35
-    }
-  ]
+  left: Array.from({ length: 3 }, (_, index) => createSlide('left', index)),
+  right: Array.from({ length: 3 }, (_, index) => createSlide('right', index))
 })
 const aspectSlideSettings = ref<Record<string, AspectSlideSettings>>({})
 const aspectPackshotWidths = ref<Record<string, number>>({})
@@ -467,7 +315,7 @@ const leavingIndex = ref<number | null>(null)
 const isSnappingSlides = ref(false)
 const isResettingTextAnimation = ref(false)
 const isPlaying = ref(true)
-const requestedSlideCount = ref(4)
+const requestedSlideCount = ref(3)
 const transitionSeconds = ref(0.65)
 const pauseSeconds = ref(2.35)
 const firstPauseSeconds = ref(2.35)
@@ -518,6 +366,7 @@ const remoteRendererStatus = ref<'idle' | 'checking' | 'connected' | 'unavailabl
 const controlsPanel = ref<HTMLElement | null>(null)
 const curveGraph = ref<SVGSVGElement | null>(null)
 const packshotContainer = ref<HTMLElement | null>(null)
+const packshotStillSource = ref('')
 let controlsScrollTop = 0
 let activeCurveHandle: 'first' | 'second' | null = null
 let packshotAnimation: AnimationItem | null = null
@@ -614,7 +463,7 @@ function getLayoutContentSlide(side: PanelSide, index: number): Slide {
 const shouldShowPackshot = computed(
   () =>
     showPackshotOnFinalSlide.value
-    && packshotIsVisible.value
+    && (!isPlaying.value || packshotIsVisible.value)
     && activeIndex.value === slideCount.value - 1
 )
 const previewZoomScale = computed(() => previewZoom.value / 100)
@@ -1151,9 +1000,9 @@ function createSlide(side: PanelSide, index: number): Slide {
     backgroundPreset: 'solid',
     splitAngle: 90,
     checkerCells: 6,
-    heading: `${side === 'left' ? 'Left' : 'Right'} slide ${index + 1}`,
+    heading: 'write something nice here',
     headingSize: 100,
-    subheading: 'Subheading',
+    subheading: 'and right here',
     subheadingSize: 100,
     logo: 'Logo',
     logoWidth: 40,
@@ -1960,9 +1809,24 @@ async function initPackshotAnimation() {
   packshotAnimation.addEventListener('DOMLoaded', () => {
     packshotAnimationReady = true
     syncPackshotState()
+    capturePackshotStill()
   })
   window.__packshotAnimation = packshotAnimation
   syncPackshotState()
+}
+
+function capturePackshotStill() {
+  if (!packshotAnimationReady || !packshotAnimation || !packshotContainer.value) return
+  const frame = packshotAnimation.currentFrame
+  const paused = packshotAnimation.isPaused
+  const end = Math.max(0, Math.min(packshotAnimation.totalFrames - 1, packshotEndFrame.value))
+  packshotAnimation.goToAndStop(end, true)
+  const svg = packshotContainer.value.querySelector('svg')
+  const canvas = packshotContainer.value.querySelector('canvas')
+  if (svg) packshotStillSource.value = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(svg))}`
+  else if (canvas?.width && canvas.height) packshotStillSource.value = canvas.toDataURL('image/png')
+  packshotAnimation.goToAndStop(frame, true)
+  if (!paused) packshotAnimation.play()
 }
 
 function setPackshotProgress(progress: number) {
@@ -1983,6 +1847,14 @@ function syncPackshotState() {
 
   if (!isVisible) {
     packshotAnimation.pause()
+    return
+  }
+
+  if (!isPlaying.value) {
+    clearTimeout(packshotStartTimer)
+    if (packshotTransitionFrame) cancelAnimationFrame(packshotTransitionFrame)
+    packshotTransitionFrame = undefined
+    setPackshotProgress(1)
     return
   }
 
@@ -3976,6 +3848,20 @@ async function writeSettingsToIndexedDb(serializedSettings: string) {
   })
 }
 
+function getDefaultLayoutSettings(): Partial<PersistedSettings> {
+  return JSON.parse(JSON.stringify(defaultLayoutSettings), (_key, value) =>
+    value === '__defaultLayoutPhoto__' ? defaultLayoutPhoto : value === '__defaultLogo__' ? defaultLogo : value)
+}
+
+function loadDefaultLayouts() {
+  stopPlayback()
+  applySettings(getDefaultLayoutSettings())
+  sessionRestoreFailed = false
+  sessionLoaded = true
+  snapToSlide(selectedIndex.value)
+  void saveSettings()
+}
+
 async function loadSettings() {
   sessionLoaded = false
   sessionRestoreFailed = false
@@ -3990,6 +3876,8 @@ async function loadSettings() {
       || localStorage.getItem(storageKey)
     if (saved) {
       applySettings(JSON.parse(saved) as Partial<PersistedSettings>)
+    } else {
+      applySettings(getDefaultLayoutSettings())
     }
   } catch (error) {
     // Keep the original record intact; defaults must never replace a failed restore.
@@ -4269,10 +4157,11 @@ watch(motionBlur, (enabled) => {
 watch(textLineTransition, (enabled) => {
   if (enabled) clearMotionTrails()
 })
+watch(packshotEndFrame, () => { void nextTick(capturePackshotStill) })
 watch([packshotRenderer, packshotPlayback], () => {
   void initPackshotAnimation()
 })
-watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPackshotState)
+watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount, isPlaying], syncPackshotState)
 </script>
 
 <template>
@@ -4297,6 +4186,9 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
         :active-width="aspectWidth"
         :active-height="aspectHeight"
         :get-slides="getAspectPreviewSlides"
+        :show-packshot="showPackshotOnFinalSlide && activeIndex === slideCount - 1"
+        :packshot-source="packshotStillSource"
+        :get-packshot-width="preset => getAspectKey(preset.width, preset.height) === getAspectKey() ? packshotWidth : (aspectPackshotWidths[getAspectKey(preset.width, preset.height)] ?? packshotWidth)"
         :get-background-style="getAspectPreviewBackgroundStyle"
         :default-logo="defaultLogo"
         :is-logo-image="isLogoImage"
@@ -5112,6 +5004,7 @@ watch([showPackshotOnFinalSlide, activeIndex, leavingIndex, slideCount], syncPac
           :filename-prefix="exportPrefix"
           :create-preset="createPresetPayload"
           @import="importPreset"
+          @defaults="loadDefaultLayouts"
           @error="showPresetError"
         />
 
