@@ -417,7 +417,11 @@ export default defineEventHandler(async event => {
     await assertExportAssetsReady(page)
     const animationSettleMs = await page.evaluate((transitionMs) => {
       const timing = (style: CSSStyleDeclaration, name: string) => Number.parseFloat(style.getPropertyValue(name)) || 0
-      return Math.max(transitionMs, ...Array.from(document.querySelectorAll<HTMLElement>('.slot-stage--main .slide-copy.has-line-transition .animated-copy-word')).map(unit => {
+      const logos = Array.from(document.querySelectorAll<HTMLElement>('.slot-stage--main .animated-brand-logo')).map(logo => {
+        const style = getComputedStyle(logo)
+        return timing(style, '--logo-enter-delay') + (timing(style, '--logo-animation-duration') || transitionMs)
+      })
+      return Math.max(transitionMs, ...logos, ...Array.from(document.querySelectorAll<HTMLElement>('.slot-stage--main .slide-copy.has-line-transition .animated-copy-word')).map(unit => {
         const style = getComputedStyle(unit)
         const entrance = timing(style, '--word-delay') + timing(style, '--copy-enter-delay') + timing(style, '--copy-enter-duration')
         const highlight = unit.className.includes('has-heading-highlight--') ? timing(style, '--highlight-delay') + timing(style, '--highlight-stagger') + 300 : 0
@@ -679,9 +683,14 @@ export default defineEventHandler(async event => {
           }
           const setBrandLogos = (slide: HTMLElement | undefined, mode: 'hidden' | 'entering' | 'visible', timeline = rawProgress) => {
             slide?.querySelectorAll<HTMLElement>('.animated-brand-logo').forEach(logo => {
-              const progress = mode === 'hidden' ? 0 : mode === 'entering' ? clamp(timeline) : 1
+              const style = getComputedStyle(logo)
+              const delay = Number.parseFloat(style.getPropertyValue('--logo-enter-delay')) || 0
+              const duration = Number.parseFloat(style.getPropertyValue('--logo-animation-duration')) || transitionSeconds * 1000
+              const fadeDuration = Number.parseFloat(style.getPropertyValue('--logo-enter-duration')) || transitionSeconds * 600
+              const elapsed = timeline * transitionSeconds * 1000 - delay
+              const progress = mode === 'hidden' ? 0 : mode === 'entering' ? clamp(elapsed / duration) : 1
               ;(logo as any).__seekBrandLogo?.(progress)
-              logo.style.opacity = String(mode === 'hidden' ? 0 : mode === 'entering' ? easeCopyProgress(timeline / .6) : 1)
+              logo.style.opacity = String(mode === 'hidden' ? 0 : mode === 'entering' ? easeCopyProgress(elapsed / fadeDuration) : 1)
             })
           }
           const setCtaTransition = (

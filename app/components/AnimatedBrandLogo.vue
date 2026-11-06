@@ -7,6 +7,8 @@ const canvas = ref<HTMLElement|null>(null)
 const playing = ref(false)
 let animation:AnimationItem|undefined
 let observer:MutationObserver|undefined
+const logoEnterDelayMs = 120
+let entranceTimer: ReturnType<typeof setTimeout> | undefined
 let active = false
 let disposed = false
 function fitArtwork() {
@@ -21,6 +23,7 @@ function sync() {
   const slide=root.value?.closest('.slot-slide')
   const snapping=Boolean(root.value?.closest('.is-snapping, .aspect-preview-card__design'))
   if(snapping) {
+    clearTimeout(entranceTimer)
     // Capture can interrupt the entrance on any frame. Freeze the underlying
     // SVG too: capture tools may inspect it even while the fallback is visible.
     fitArtwork()
@@ -33,9 +36,15 @@ function sync() {
     // Hidden panels have no measurable artwork at mount. Fit after they enter.
     fitArtwork()
     playing.value=true
-    animation.setSpeed(30 / (30 * Math.max(.1,props.duration)))
-    animation.playSegments([0,30],true)
+    clearTimeout(entranceTimer)
+    animation.goToAndStop(0,true)
+    entranceTimer=setTimeout(()=>{
+      if(disposed || !active)return
+      animation!.setSpeed(1 / Math.max(.1,props.duration))
+      animation!.playSegments([0,30],true)
+    },logoEnterDelayMs)
   } else if(!next) {
+    clearTimeout(entranceTimer)
     // Hold the animated artwork throughout the outgoing slide transition.
     // Restore the fallback only once the slide is fully offscreen.
     const leaving=Boolean(slide?.classList.contains('is-leaving')) && !snapping
@@ -93,12 +102,12 @@ onMounted(async()=>{
   if(stage)observer.observe(stage,{attributes:true,attributeFilter:['class'],subtree:true})
 })
 watch(()=>props.src,()=>{playing.value=false})
-onBeforeUnmount(()=>{disposed=true;observer?.disconnect();animation?.destroy()})
+onBeforeUnmount(()=>{disposed=true;clearTimeout(entranceTimer);observer?.disconnect();animation?.destroy()})
 </script>
 
 <template>
   <div ref="root" class="animated-brand-logo" :class="{'is-playing':playing}"
-    :style="{'--logo-enter-delay': '0ms', '--logo-enter-duration': `${duration * 600}ms`}">
+    :style="{'--logo-enter-delay': `${logoEnterDelayMs}ms`, '--logo-enter-duration': `${duration * 600}ms`, '--logo-animation-duration': `${duration * 1000}ms`}">
     <img :src="src" alt="">
     <div ref="canvas" class="animated-brand-logo__motion" aria-hidden="true" />
   </div>

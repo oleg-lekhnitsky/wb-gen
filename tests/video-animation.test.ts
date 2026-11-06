@@ -23,3 +23,22 @@ test('video uses delayed line entrance and staggered highlight timing independen
     assert.ok((await sample(1200)).every(unit=>unit.opacity===1&&unit.highlight===1))
   }finally{await browser.close()}
 })
+
+test('video regular logo honors its entrance delay for motion and opacity',async()=>{
+  const {runInNewContext}=await import('node:vm')
+  const source=await readFile(new URL('../server/api/render-browser.post.ts',import.meta.url),'utf8')
+  const helpers=stripTypeScriptTypes(source.slice(source.indexOf('          const clamp ='),source.indexOf('          const setCtaTransition =')))
+  let progress=0
+  const logo={style:{opacity:''},__seekBrandLogo:(value:number)=>{progress=value}}
+  const values:Record<string,string>={'--logo-enter-delay':'120ms','--logo-animation-duration':'1400ms','--logo-enter-duration':'840ms'}
+  const seek=runInNewContext(helpers+'\nsetBrandLogos',{rawProgress:0,transitionSeconds:1.4,curve:{x1:.76,y1:0,x2:.073,y2:1.012},getComputedStyle:()=>({getPropertyValue:(key:string)=>values[key]||''})})
+  const slide={querySelectorAll:()=>[logo]}
+  seek(slide,'entering',100/1400)
+  assert.equal(progress,0)
+  assert.equal(Number(logo.style.opacity),0)
+  seek(slide,'entering',200/1400)
+  assert.ok(Math.abs(progress-80/1400)<1e-10)
+  assert.ok(Number(logo.style.opacity)>0)
+  seek(slide,'entering',1520/1400)
+  assert.ok(Math.abs(progress-1)<1e-10)
+})
